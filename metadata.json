@@ -1,0 +1,6 @@
+{
+  "name": "Pinokio AI Studio & Copilot",
+  "description": "Assistant intelligent pour Pinokio.co : analyse d'images par IA, automatisation des réglages complexes pour Wan2GP, LTX Video, Maestro et optimisation VRAM.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

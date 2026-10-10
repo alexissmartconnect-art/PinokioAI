@@ -18,7 +18,7 @@ import { NarrativeScene, ExperienceManifest } from '../types';
 interface VisualInspectorPanelProps {
   activeScene: NarrativeScene;
   manifest: ExperienceManifest;
-  onApplyPatch: (instruction: string) => void;
+  onApplyPatch: (instruction: string) => string[];
   isPatching?: boolean;
 }
 
@@ -43,10 +43,14 @@ export const VisualInspectorPanel: React.FC<VisualInspectorPanelProps> = ({
     e.preventDefault();
     if (!naturalCommand.trim() || isPatching) return;
     
-    onApplyPatch(naturalCommand.trim());
-    setLastPatchedNotice(`Patch appliqué avec succès : "${naturalCommand.trim()}"`);
-    setNaturalCommand('');
-    setTimeout(() => setLastPatchedNotice(null), 4000);
+    const changes = onApplyPatch(naturalCommand.trim());
+    setLastPatchedNotice(
+      changes.length > 0
+        ? `Patch appliqué : ${changes.join(' · ')}`
+        : 'Aucune modification reconnue. Essayez : « ralentis », « autre sens », « à 40 % », « profondeur », « mobile ».'
+    );
+    if (changes.length > 0) setNaturalCommand('');
+    setTimeout(() => setLastPatchedNotice(null), 5000);
   };
 
   return (
@@ -145,8 +149,12 @@ export const VisualInspectorPanel: React.FC<VisualInspectorPanelProps> = ({
               key={idx}
               type="button"
               onClick={() => {
-                onApplyPatch(preset.cmd);
-                setLastPatchedNotice(`Patch appliqué : "${preset.cmd}"`);
+                const changes = onApplyPatch(preset.cmd);
+                setLastPatchedNotice(
+                  changes.length > 0
+                    ? `Patch appliqué : ${changes.join(' · ')}`
+                    : `Aucune modification pour cette scène (« ${preset.label} »).`
+                );
                 setTimeout(() => setLastPatchedNotice(null), 3500);
               }}
               className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-[10px] font-mono border border-slate-800 transition-colors"

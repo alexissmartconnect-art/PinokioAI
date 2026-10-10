@@ -1,13 +1,23 @@
-import { 
-  CreativeBrief, 
-  NarrativeScene, 
-  AssetPlanItem, 
-  PerformanceBudget, 
-  ProductIdentity, 
+import {
+  CreativeBrief,
+  NarrativeScene,
+  AssetPlanItem,
+  PerformanceBudget,
+  ProductIdentity,
   RecipeFamily,
   ExperienceStrategy,
   CinematicCapability
 } from '../../types';
+import { ExperienceStrategyEngine, StrategyEvaluationResult } from './experienceStrategyEngine';
+
+export interface PlanOptions {
+  /** Respect prefers-reduced-motion (forces DOM_MOTION through the strategy engine). */
+  prefersReducedMotion?: boolean;
+  /** Override the video detection performed on the prompt. */
+  hasCinematicVideo?: boolean;
+  /** Override the strategy detection performed on the prompt. */
+  userExplicitPreference?: ExperienceStrategy;
+}
 
 export interface CreativeDirectorOutput {
   brief: CreativeBrief;
@@ -16,55 +26,155 @@ export interface CreativeDirectorOutput {
   performanceBudget: PerformanceBudget;
   recommendedStrategy: ExperienceStrategy;
   subCapabilities: CinematicCapability[];
+  strategyEvaluation: StrategyEvaluationResult;
 }
+
+type ProductKind = 'watch' | 'car' | 'sneaker' | 'generic';
+
+interface NarrativeTheme {
+  tone: CreativeBrief['emotionalTone'];
+  pace: CreativeBrief['visualPace'];
+  audience: string;
+  keyMoments: string[];
+  sceneNames: string[];
+  headlines: string[];
+  subheads: ((p: ProductIdentity) => string)[];
+  visualFocus: string[];
+  lighting: string[];
+  motion: string[];
+}
+
+const WATCH_THEME: NarrativeTheme = {
+  tone: 'luxury_craft',
+  pace: 'deliberate',
+  audience: 'Amateurs de design de haute précision, esthètes & acheteurs avertis',
+  keyMoments: [
+    'Éveil de la matière première brute sous éclairage rasant',
+    'Déconstruction atomique et mise en lévitation des composants',
+    'Horlogerie / mécanique interne en mouvement synchronisé',
+    'Convergence cinématique et assemblage magnétique fluide',
+    'Révélation finale en majesté avec reflets dynamiques au scroll'
+  ],
+  sceneNames: ['RAW MATERIAL', 'CRAFT & COMPONENTS', 'THE MECHANISM', 'ASSEMBLY', 'FINAL PRODUCT'],
+  headlines: ['L’ORIGINE MINÉRALE', 'L’USINAGE DE PRÉCISION', 'LE CŒUR PULSANT', 'CONVERGENCE PARFAITE', 'L’ŒUVRE ACCOMPLIE'],
+  subheads: [
+    (p) => `Bloc pur de ${p.materials[0] || 'titane brut'} soumis à un premier façonnage dans l’obscurité.`,
+    (p) => `${p.distinctiveFeatures[0] || 'Composants micrométriques'} taillés au laser et usinés au micron près.`,
+    () => 'La cinématique interne s’enclenche : balancier, rouages et différentiels s’animent en cadence.',
+    () => 'Sous l’effet du défilement, le boîtier, le verre saphir et la lunette s’emboîtent au millième.',
+    (p) => `${p.name} dans son éclat final, paré pour l’éternité. Défilement et interaction 360° débloqués.`
+  ],
+  visualFocus: [
+    'Texture brute, étincelles d’usinage, reflets rasants spéculaires.',
+    'Décomposition et lévitation des rouages, vis et platines squelettées.',
+    'Mouvement synchronisé des engrenages intérieurs et réfraction de la lumière.',
+    'Ajustement parfait des tolérances mécaniques, claquement visuel magnétique.',
+    'Reflet de verre saphir, éclat des biseaux satinés, perfection absolue.'
+  ],
+  lighting: [
+    'Lumière d’ambiance bleu nuit glaciale (Key Light 2800K rasant, Rim Light 6500K)',
+    'Éclairage d’atelier d’horloger, faisceaux directionnels chauds mettant en valeur le poli bloqué.',
+    'Contre-jour ambré et reflets dorés soulignant l’échappement et le spiral.',
+    'Lumière blanche zénithale de studio de luxe, double rim light sculptant les arêtes.',
+    'Studio commercial Apple/luxe, halo doux en arrière-plan et contraste dramatique.'
+  ],
+  motion: [
+    'Rotations lentes sur l’axe Y, micro-vibrations cinématiques',
+    'Dispersion radiale contrôlée des éléments sur les 3 axes X, Y, Z',
+    'Oscillations à fréquence harmonique, rotation continue des axes',
+    'Attraction centripète guidée, amortissement exponentiel',
+    'Interactivité inertielle contrôlée au curseur et gyroscope mobile'
+  ]
+};
+
+const GENERIC_THEME: NarrativeTheme = {
+  tone: 'hyper_tech',
+  pace: 'deliberate',
+  audience: 'Acheteurs exigeant un design de haute précision et une mise en scène soignée',
+  keyMoments: [
+    'Matière d’origine révélée sous éclairage rasant',
+    'Anatomie du produit : chaque élément isolé et mis en valeur',
+    'Cœur technique en mouvement, fonctions clés démontrées',
+    'Convergence des éléments vers la forme finale',
+    'Révélation finale avec interaction au scroll'
+  ],
+  sceneNames: ['RAW MATERIAL', 'ANATOMY', 'CORE SYSTEM', 'ASSEMBLY', 'FINAL PRODUCT'],
+  headlines: ['L’ORIGINE DES MATÉRIAUX', 'ANATOMIE DU PRODUIT', 'LE CŒUR TECHNIQUE', 'CONVERGENCE & ASSEMBLAGE', 'LA RÉVÉLATION FINALE'],
+  subheads: [
+    (p) => `${p.materials[0] || 'Matériau principal'} façonné avec précision, surfaces prêtes pour la mise en scène.`,
+    (p) => `${p.distinctiveFeatures[0] || 'Les sous-ensembles'} isolés pour révéler la structure du produit.`,
+    (p) => `${p.distinctiveFeatures[1] || p.distinctiveFeatures[0] || 'Le système central'} entre en fonctionnement.`,
+    () => 'Les éléments convergent et s’emboîtent avec précision jusqu’à la forme finale.',
+    (p) => `${p.name} dans sa forme finale. Interaction 360° débloquée.`
+  ],
+  visualFocus: [
+    'Texture de surface, reflets rasants, détails de finition.',
+    'Éclatement contrôlé des sous-ensembles sur trois axes.',
+    'Mise en mouvement des fonctions clés, lisibilité du mécanisme.',
+    'Convergence fluide, alignement précis des pièces.',
+    'Silhouette complète, éclat des matériaux, cadrage iconique.'
+  ],
+  lighting: [
+    'Key light chaude frontale, fill doux et rim light froide',
+    'Éclairage directionnel mettant en valeur les surfaces usinées',
+    'Contre-jour contrasté soulignant les volumes internes',
+    'Lumière zénithale studio neutre, reflets contrôlés',
+    'Studio commercial, halo doux en arrière-plan et contraste dramatique'
+  ],
+  motion: [
+    'Rotation lente sur l’axe Y, micro-vibrations cinématiques',
+    'Dispersion radiale contrôlée des sous-ensembles',
+    'Mouvements synchronisés des fonctions clés',
+    'Attraction guidée et amortissement exponentiel',
+    'Interactivité inertielle au curseur et gyroscope mobile'
+  ]
+};
+
+const CAMERA_PRESETS: { position: [number, number, number]; target: [number, number, number]; fov: number; description: string }[] = [
+  { position: [0, 1.2, 5.0], target: [0, 0, 0], fov: 38, description: 'Traveling avant lent et majestueux vers le cœur de la matière brute.' },
+  { position: [2.5, 0.8, 3.8], target: [0, 0.2, 0], fov: 34, description: 'Rotation orbitale à 45° révélant la volumétrie des pièces séparées.' },
+  { position: [-1.8, -0.4, 2.9], target: [0, 0, 0], fov: 28, description: 'Macro plongeante dans les profondeurs du mécanisme.' },
+  { position: [0.5, 1.5, 4.2], target: [0, 0, 0], fov: 35, description: 'Redressement vertical régulier accompagnant la fermeture des éléments.' },
+  { position: [0, 0, 3.4], target: [0, 0, 0], fov: 32, description: 'Vue frontale iconique avec légère inclinaison de 12° invitant à l’interaction.' }
+];
 
 export class CreativeDirector {
   /**
    * Transforms a natural language user request into a complete creative roadmap.
-   * Dynamically adapts narrative to the requested product category.
+   * Narrative, recipe and strategy all adapt to the detected product category.
    */
   public static planExperience(
-    userPrompt: string, 
+    userPrompt: string,
     referenceImageSrc?: string,
     hasGlbModel: boolean = false,
-    isMobile: boolean = false
+    isMobile: boolean = false,
+    options: PlanOptions = {}
   ): CreativeDirectorOutput {
     const promptLower = userPrompt.toLowerCase();
-    
-    // 1. Identify Product Identity
+
+    // 1. Product identity & narrative theme
     const product = this.extractProductIdentity(promptLower, userPrompt);
-    
-    // 2. Select appropriate recipe
-    let recipeFamily: RecipeFamily = 'PRODUCT_GENESIS';
-    if (promptLower.includes('éclat') || promptLower.includes('exploded') || promptLower.includes('composant')) {
-      recipeFamily = 'EXPLODED_PRODUCT';
-    } else if (promptLower.includes('lancement') || promptLower.includes('launch') || promptLower.includes('hero')) {
-      recipeFamily = 'CINEMATIC_LAUNCH';
-    } else if (promptLower.includes('technique') || promptLower.includes('spec') || promptLower.includes('moteur')) {
-      recipeFamily = 'TECHNICAL_PRODUCT';
-    }
+    const kind = this.detectProductKind(product);
+    const theme = this.selectTheme(kind, promptLower);
 
-    // 3. Generate Visual Narrative (Scenes)
-    const scenes = this.buildNarrativeScenes(product, recipeFamily);
+    // 2. Recipe (actually applied to the scenes below)
+    const recipeFamily = this.selectRecipe(promptLower);
 
-    // 4. Create Asset Plan
+    // 3. Strategy: single source of truth = ExperienceStrategyEngine
+    const strategyEvaluation = ExperienceStrategyEngine.evaluateStrategy({
+      hasGlbModel,
+      hasCinematicVideo: options.hasCinematicVideo ?? /vid[ée]o/.test(promptLower),
+      isMobileDevice: isMobile,
+      prefersReducedMotion: options.prefersReducedMotion ?? false,
+      userExplicitPreference: options.userExplicitPreference ?? this.detectExplicitStrategy(promptLower)
+    });
+    const recommendedStrategy = strategyEvaluation.selectedStrategy;
+
+    // 4. Narrative & asset plan
+    const scenes = this.buildNarrativeScenes(product, recipeFamily, theme);
     const assetPlan = this.buildAssetPlan(product, hasGlbModel);
 
-    // 5. Select Strategy based on constraints
-    let recommendedStrategy: ExperienceStrategy = 'TRUE_3D';
-    if (isMobile) {
-      recommendedStrategy = 'HYBRID';
-    } else if (hasGlbModel) {
-      recommendedStrategy = 'TRUE_3D';
-    } else if (promptLower.includes('vidéo') || promptLower.includes('video')) {
-      recommendedStrategy = 'VIDEO_SCROLL';
-    } else if (promptLower.includes('sequence') || promptLower.includes('images')) {
-      recommendedStrategy = 'IMAGE_SEQUENCE';
-    } else {
-      recommendedStrategy = 'HYBRID'; // Best resilient strategy combining WebGL canvas + DOM motion
-    }
-
-    // 6. Define Sub-capabilities
+    // 5. Sub-capabilities consistent with the selected strategy
     const subCapabilities: CinematicCapability[] = [
       'CINEMATIC_WEB_EXPERIENCE',
       'PRODUCT_STORYTELLING',
@@ -76,38 +186,31 @@ export class CreativeDirector {
       'KINETIC_TYPOGRAPHY',
       'MATERIAL_REVEAL'
     ];
-
     if (recommendedStrategy === 'TRUE_3D') subCapabilities.push('TRUE_3D_PRODUCT');
     if (recommendedStrategy === 'VIDEO_SCROLL') subCapabilities.push('SCROLL_SCRUB_VIDEO');
     if (recommendedStrategy === 'IMAGE_SEQUENCE') subCapabilities.push('IMAGE_SEQUENCE_SCROLL');
     if (recommendedStrategy === 'HYBRID') subCapabilities.push('HYBRID_3D_VIDEO_DOM');
 
-    // 7. Calculate realistic performance budget
+    // 6. Performance budget
     const performanceBudget: PerformanceBudget = {
       maxInitialJsKb: isMobile ? 180 : 320,
       maxMediaWeightMb: isMobile ? 6.5 : 18.0,
       max3dAssetWeightMb: isMobile ? 3.0 : 8.5,
       maxTexturesWeightMb: isMobile ? 4.0 : 12.0,
-      maxWebGLContexts: 1, // Strict single context discipline
+      maxWebGLContexts: 1,
       targetFps: 60,
       estimatedMemoryImpactMb: isMobile ? 65 : 140
     };
 
     const brief: CreativeBrief = {
-      id: `brief-${Date.now()}`,
+      id: `brief-${Date.now().toString(36)}`,
       clientGoal: userPrompt,
       targetProduct: product,
       recipeFamily,
-      emotionalTone: promptLower.includes('luxe') || promptLower.includes('montre') ? 'luxury_craft' : 'hyper_tech',
-      visualPace: 'deliberate',
-      targetAudience: 'Amateurs de design de haute précision, esthètes & acheteurs avertis',
-      keyMoments: [
-        'Éveil de la matière première brute sous éclairage rasant',
-        'Déconstruction atomique et mise en lévitation des composants',
-        'Horlogerie / mécanique interne en mouvement synchronisé',
-        'Convergence cinématique et assemblage magnétique fluide',
-        'Révélation finale en majesté avec reflets dynamiques au scroll'
-      ]
+      emotionalTone: theme.tone,
+      visualPace: recommendedStrategy === 'VIDEO_SCROLL' ? 'poetic' : theme.pace,
+      targetAudience: theme.audience,
+      keyMoments: theme.keyMoments
     };
 
     return {
@@ -116,8 +219,43 @@ export class CreativeDirector {
       assetPlan,
       performanceBudget,
       recommendedStrategy,
-      subCapabilities
+      subCapabilities,
+      strategyEvaluation
     };
+  }
+
+  /** Recipe families are selected from explicit keywords; default is PRODUCT_GENESIS. */
+  private static selectRecipe(lower: string): RecipeFamily {
+    if (/(éclat|eclat|exploded|composant)/.test(lower)) return 'EXPLODED_PRODUCT';
+    if (/(lancement|launch|hero)/.test(lower)) return 'CINEMATIC_LAUNCH';
+    if (/(technique|spec|moteur)/.test(lower)) return 'TECHNICAL_PRODUCT';
+    if (/(portfolio|galerie)/.test(lower)) return 'IMMERSIVE_PORTFOLIO';
+    return 'PRODUCT_GENESIS';
+  }
+
+  /** Detects an explicit strategy request such as "en séquence d'images" or "version GLB". */
+  private static detectExplicitStrategy(lower: string): ExperienceStrategy | undefined {
+    if (/\b(glb|gltf|true 3d|3d réel)\b/.test(lower)) return 'TRUE_3D';
+    if (/(séquence|sequence) d.images|image sequence/.test(lower)) return 'IMAGE_SEQUENCE';
+    if (/(vid[ée]o).{0,20}(scrub|scroll|défilement)/.test(lower)) return 'VIDEO_SCROLL';
+    return undefined;
+  }
+
+  private static detectProductKind(product: ProductIdentity): ProductKind {
+    const cat = product.category.toLowerCase();
+    if (cat.includes('horlogerie')) return 'watch';
+    if (cat.includes('hypercar') || cat.includes('grand tourisme')) return 'car';
+    if (cat.includes('sneaker')) return 'sneaker';
+    return 'generic';
+  }
+
+  private static selectTheme(kind: ProductKind, lower: string): NarrativeTheme {
+    const base = kind === 'watch' ? WATCH_THEME : GENERIC_THEME;
+    const theme: NarrativeTheme = { ...base };
+    if (kind === 'car') theme.pace = 'explosive';
+    if (kind === 'sneaker') theme.pace = 'kinetic';
+    if (lower.includes('luxe')) theme.tone = 'luxury_craft';
+    return theme;
   }
 
   private static extractProductIdentity(lower: string, original: string): ProductIdentity {
@@ -169,126 +307,63 @@ export class CreativeDirector {
     }
   }
 
-  private static buildNarrativeScenes(product: ProductIdentity, recipe: RecipeFamily): NarrativeScene[] {
-    return [
-      {
-        id: 'scene-01',
-        order: 1,
-        name: 'RAW MATERIAL',
-        scrollStart: 0.0,
-        scrollEnd: 0.20,
-        headline: 'L’ORIGINE MINÉRALE',
-        subhead: `Bloc pur de ${product.materials[0] || 'titane brut'} soumis à un premier façonnage dans l’obscurité.`,
-        visualFocus: 'Texture brute, étincelles d’usinage, reflets rasants spéculaires.',
-        cameraChoreography: {
-          position: [0, 1.2, 5.0],
-          target: [0, 0, 0],
-          fov: 38,
-          description: 'Traveling avant lent et majestueux vers le cœur de la matière brute.'
-        },
-        lightingDescription: 'Lumière d’ambiance bleu nuit glaciale (Key Light 2800K rasant, Rim Light 6500K)',
-        motionVectors: 'Rotations lentes sur l’axe Y, micro-vibrations cinématiques',
-        assemblyProgress: 0,
-        explodedDistance: 1.0,
-        particleDensity: 120
-      },
-      {
-        id: 'scene-02',
-        order: 2,
-        name: 'CRAFT & COMPONENTS',
-        scrollStart: 0.20,
-        scrollEnd: 0.42,
-        headline: 'L’USINAGE DE PRÉCISION',
-        subhead: `${product.distinctiveFeatures[0] || 'Composants micrométriques'} taillés au laser et usinés au micron près.`,
-        visualFocus: 'Décomposition et lévitation des rouages, vis et platines squelettées.',
-        cameraChoreography: {
-          position: [2.5, 0.8, 3.8],
-          target: [0, 0.2, 0],
-          fov: 34,
-          description: 'Rotation orbitale à 45° révélant la volumétrie des pièces séparées.'
-        },
-        lightingDescription: 'Éclairage d’atelier d’horloger, faisceaux directionnels chauds mettant en valeur le poli bloqué.',
-        motionVectors: 'Dispersion radiale contrôlée des éléments sur les 3 axes X, Y, Z',
-        assemblyProgress: 25,
-        explodedDistance: 0.82,
-        particleDensity: 80
-      },
-      {
-        id: 'scene-03',
-        order: 3,
-        name: 'THE MECHANISM',
-        scrollStart: 0.42,
-        scrollEnd: 0.65,
-        headline: 'LE CŒUR PULSANT',
-        subhead: 'La cinématique interne s’enclenche : balancier, rouages et différentiels s’animent en cadence.',
-        visualFocus: 'Mouvement synchronisé des engrenages intérieurs et réfraction de la lumière.',
-        cameraChoreography: {
-          position: [-1.8, -0.4, 2.9],
-          target: [0, 0, 0],
-          fov: 28,
-          description: 'Macro plongeante dans les profondeurs du calibre mécanique.'
-        },
-        lightingDescription: 'Contre-jour ambré et reflets dorés soulignant l’échappement et le spiral.',
-        motionVectors: 'Oscillations à fréquence harmonique, rotation continue des axes',
-        assemblyProgress: 60,
-        explodedDistance: 0.45,
-        particleDensity: 40
-      },
-      {
-        id: 'scene-04',
-        order: 4,
-        name: 'ASSEMBLY',
-        scrollStart: 0.65,
-        scrollEnd: 0.85,
-        headline: 'CONVERGENCE PARFAITE',
-        subhead: 'Sous l’effet du défilement, le boîtier, le verre saphir et la lunette s’emboîtent au millième.',
-        visualFocus: 'Ajustement parfait des tolérances mécaniques, claquement visuel magnétique.',
-        cameraChoreography: {
-          position: [0.5, 1.5, 4.2],
-          target: [0, 0, 0],
-          fov: 35,
-          description: 'Redressement vertical régulier accompagnant la fermeture des éléments.'
-        },
-        lightingDescription: 'Lumière blanche zénithale de studio de luxe, double rim light sculptant les arêtes.',
-        motionVectors: 'Attraction centripète guidée, amortissement exponentiel',
-        assemblyProgress: 92,
-        explodedDistance: 0.12,
-        particleDensity: 20
-      },
-      {
-        id: 'scene-05',
-        order: 5,
-        name: 'FINAL PRODUCT',
-        scrollStart: 0.85,
-        scrollEnd: 1.0,
-        headline: 'L’ŒUVRE ACCOMPLIE',
-        subhead: `${product.name} dans son éclat final, paré pour l’éternité. Défilement et interaction 360° débloqués.`,
-        visualFocus: 'Reflet de verre saphir, éclat des biseaux satinés, perfection absolue.',
-        cameraChoreography: {
-          position: [0, 0, 3.4],
-          target: [0, 0, 0],
-          fov: 32,
-          description: 'Vue frontale iconique avec légère inclinaison de 12° invitant à l’interaction.'
-        },
-        lightingDescription: 'Studio commercial Apple/luxe, halo doux en arrière-plan et contraste dramatique.',
-        motionVectors: 'Interactivité inertielle contrôlée au curseur et gyroscope mobile',
-        assemblyProgress: 100,
-        explodedDistance: 0.0,
-        particleDensity: 0
+  private static buildNarrativeScenes(product: ProductIdentity, recipe: RecipeFamily, theme: NarrativeTheme): NarrativeScene[] {
+    const ranges: [number, number][] = [[0.0, 0.2], [0.2, 0.42], [0.42, 0.65], [0.65, 0.85], [0.85, 1.0]];
+    const assembly = [0, 25, 60, 92, 100];
+    const exploded = [1.0, 0.82, 0.45, 0.12, 0.0];
+    const particles = [120, 80, 40, 20, 0];
+
+    return ranges.map(([start, end], i) => {
+      let explodedDistance = exploded[i];
+      let headline = theme.headlines[i];
+      let subhead = theme.subheads[i](product);
+      let motionVectors = theme.motion[i];
+
+      // Recipe modifiers: each recipe changes the narrative in a concrete, observable way
+      if (recipe === 'EXPLODED_PRODUCT' && i <= 2) {
+        explodedDistance = Math.min(1, explodedDistance + 0.15);
       }
-    ];
+      if (recipe === 'TECHNICAL_PRODUCT' && i === 2) {
+        headline = 'SPÉCIFICATIONS & FONCTIONNEMENT';
+        subhead = `Fiche technique : ${product.proportions}. ${subhead}`;
+      }
+      if (recipe === 'CINEMATIC_LAUNCH' && i === 4) {
+        headline = 'LANCEMENT';
+        motionVectors = `Entrée hero en travelling rapide, puis ${theme.motion[4]}`;
+      }
+      if (recipe === 'IMMERSIVE_PORTFOLIO' && i === 4) {
+        subhead = `${product.name} : vue d’ensemble du portfolio. Naviguer au scroll pour explorer.`;
+      }
+
+      return {
+        id: `scene-0${i + 1}`,
+        order: i + 1,
+        name: theme.sceneNames[i],
+        scrollStart: start,
+        scrollEnd: end,
+        headline,
+        subhead,
+        visualFocus: theme.visualFocus[i],
+        cameraChoreography: { ...CAMERA_PRESETS[i] },
+        lightingDescription: theme.lighting[i],
+        motionVectors,
+        assemblyProgress: assembly[i],
+        explodedDistance,
+        particleDensity: particles[i]
+      };
+    });
   }
 
   private static buildAssetPlan(product: ProductIdentity, hasGlb: boolean): AssetPlanItem[] {
     return [
       {
         id: 'asset-mesh-core',
-        name: `${product.name} Procedural PBR Assembly Model`,
+        name: `${product.name} — ${hasGlb ? 'maillage GLB fourni' : 'assemblage PBR procédural'}`,
         type: '3d_model',
-        status: hasGlb ? 'ASSET_USABLE' : 'ASSET_USABLE',
+        status: 'ASSET_USABLE',
         sourceEngine: 'Three.js',
         fallbackStrategy: 'WebGL Procedural Geometry with PBR shaders',
-        estimatedWeightKb: 1450
+        estimatedWeightKb: hasGlb ? 4200 : 1450
       },
       {
         id: 'asset-video-timeline',
@@ -301,7 +376,7 @@ export class CreativeDirector {
       },
       {
         id: 'asset-pbr-materials',
-        name: 'Brushed Titanium & Sapphire PBR Texture Set',
+        name: 'PBR Texture Set (matériaux du produit)',
         type: 'texture_pbr',
         status: 'ASSET_USABLE',
         sourceEngine: 'LocalWebGL',
@@ -310,7 +385,7 @@ export class CreativeDirector {
       },
       {
         id: 'asset-vector-schematics',
-        name: 'Horological Caliber Schematics & Wireframe Overlay',
+        name: 'Schémas techniques & overlay vectoriel',
         type: 'vector_path',
         status: 'ASSET_USABLE',
         sourceEngine: 'BrowserSVG',

@@ -298,7 +298,7 @@ export interface PerformanceBudget {
 export interface QualityGateCheck {
   id: string;
   name: string;
-  category: 'build' | 'assets' | 'performance' | 'accessibility' | 'responsive' | 'motion';
+  category: 'build' | 'assets' | 'performance' | 'accessibility' | 'responsive' | 'motion' | 'narrative' | 'strategy';
   status: QualityGateStatus;
   message: string;
   metric?: string;

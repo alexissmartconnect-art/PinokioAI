@@ -64,6 +64,21 @@ export class ExperienceStrategyEngine {
       };
     }
 
+    // Explicit user preference is honoured, except a heavy TRUE_3D on a constrained mobile device
+    if (userExplicitPreference && !(isMobileDevice && userExplicitPreference === 'TRUE_3D')) {
+      return {
+        selectedStrategy: userExplicitPreference,
+        confidenceScore: 0.99,
+        reason: `Stratégie demandée explicitement par l’utilisateur : ${userExplicitPreference}. Repli mobile : DOM_MOTION.`,
+        fallbackStrategy: 'HYBRID',
+        mobileStrategy: 'DOM_MOTION',
+        reducedMotionStrategy: 'DOM_MOTION',
+        eligibleStrategies: [
+          { strategy: userExplicitPreference, score: 0.99, pros: 'Choix explicite de l’utilisateur', cons: 'Aucune comparaison avec les autres stratégies' }
+        ]
+      };
+    }
+
     // Scenario D: Weak mobile device profile
     if (isMobileDevice) {
       return {

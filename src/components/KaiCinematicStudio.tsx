@@ -22,7 +22,9 @@ import {
   HelpCircle,
   Film,
   Zap,
-  Box
+  Box,
+  Undo2,
+  Clock
 } from 'lucide-react';
 import { 
   ExperienceManifest, 
@@ -36,8 +38,8 @@ import { VisualInspectorPanel } from './VisualInspectorPanel';
 import { ScrollDirector, ScrollDirectorState } from '../services/kai/scrollDirector';
 import { CreativeDirector } from '../services/kai/creativeDirector';
 import { ExperienceStrategyEngine } from '../services/kai/experienceStrategyEngine';
-import { CinematicQualityGate } from '../services/kai/qualityGate';
 import { createDemoGenesisWatchProject } from '../services/kai/demoProject';
+import { createManifestFromPrompt, applyInspectorPatch, withStrategy } from '../services/kai/manifestOps';
 import { NEXUS_SUBSYSTEM_AUDIT } from '../services/kai/kaiCore';
 
 export const KaiCinematicStudio: React.FC = () => {
@@ -49,8 +51,8 @@ export const KaiCinematicStudio: React.FC = () => {
   const [orbMessage, setOrbMessage] = useState<string>("L'expérience cinématique est prête. Utilisez le défilement ci-dessous ou demandez des modifications.");
   const [isOrbProcessing, setIsOrbProcessing] = useState(false);
 
-  // Active Strategy & Controls
-  const [activeStrategy, setActiveStrategy] = useState<ExperienceStrategy>(manifest.strategy);
+  // Active Strategy (derived from the manifest so the switcher and the audit never diverge)
+  const activeStrategy = manifest.strategy;
   const [isMobileMode, setIsMobileMode] = useState(false);
   const [isReducedMotion, setIsReducedMotion] = useState(false);
 
@@ -81,19 +83,32 @@ export const KaiCinematicStudio: React.FC = () => {
   useEffect(() => {
     if (!isPlayingTimeline) return;
     const interval = setInterval(() => {
-      setScrollProgress((prev) => {
-        if (prev >= 1.0) {
-          setIsPlayingTimeline(false);
-          return 1.0;
-        }
-        return Math.min(1.0, prev + 0.005);
-      });
+      setScrollProgress((prev) => Math.min(1.0, prev + 0.005));
     }, 30);
     return () => clearInterval(interval);
   }, [isPlayingTimeline]);
 
+  // Stop autoplay once the end of the timeline is reached
+  useEffect(() => {
+    if (scrollProgress >= 1.0) setIsPlayingTimeline(false);
+  }, [scrollProgress]);
+
+  // Revision history: every manifest change is committed so it can be undone
+  const [history, setHistory] = useState<ExperienceManifest[]>([]);
+  const commitManifest = (next: ExperienceManifest) => {
+    setHistory((h) => [...h.slice(-29), manifest]);
+    setManifest(next);
+  };
+  const undoRevision = () => {
+    const previous = history[history.length - 1];
+    if (!previous) return;
+    setHistory(history.slice(0, -1));
+    setManifest(previous);
+  };
+
   // Handle Natural Language Prompt from KAI Orb
   const handleOrbPrompt = async (prompt: string) => {
+    if (!prompt.trim()) return;
     setIsOrbProcessing(true);
 
     // Sequence of authoritative state transitions per Instruction 30
@@ -113,154 +128,85 @@ export const KaiCinematicStudio: React.FC = () => {
     setOrbMessage("Je vérifie le rendu 60fps et les contraintes de performance.");
     await new Promise((r) => setTimeout(r, 550));
 
-    // Execute real creative director planning
-    const output = CreativeDirector.planExperience(prompt, undefined, false, isMobileMode);
-    
-    // Build new manifest
-    const newManifest: ExperienceManifest = {
-      experienceId: `exp-${Date.now()}`,
-      title: `${output.brief.targetProduct.name} — Expérience KAI`,
-      version: '1.1.0',
-      strategy: output.recommendedStrategy,
-      subCapabilities: output.subCapabilities,
-      brief: output.brief,
-      scenes: output.scenes,
-      assetPlan: output.assetPlan,
-      performanceBudget: output.performanceBudget,
-      breakpoints: { mobileMaxPx: 640, tabletMaxPx: 1024, desktopMinPx: 1025 },
-      fallbacks: {
-        mobileStrategy: 'DOM_MOTION',
-        reducedMotionStrategy: 'DOM_MOTION',
-        offlineMediaFallback: 'Génération procédurale de maillage PBR'
-      },
-      localMediaDependencies: [
-        { engine: 'WanGP (Pinokio Local)', registered: true, available: true },
-        { engine: 'LTX Director v1.3.25', registered: true, available: true },
-        { engine: 'Three.js WebGL Canvas', registered: true, available: true }
-      ],
-      externalDependencies: ['three', 'motion', 'lucide-react'],
-      qualityGateChecks: [],
-      overallQualityStatus: 'PASS',
-      revisionId: `rev-${Date.now().toString(36)}`,
-      createdAt: new Date().toISOString()
-    };
+    const { manifest: newManifest, plan } = createManifestFromPrompt(prompt, {
+      isMobile: isMobileMode,
+      prefersReducedMotion: isReducedMotion
+    });
 
-    const audit = CinematicQualityGate.runAudit(newManifest);
-    newManifest.qualityGateChecks = audit.checks;
-    newManifest.overallQualityStatus = audit.overallStatus;
-
-    setManifest(newManifest);
-    setActiveStrategy(newManifest.strategy);
+    commitManifest(newManifest);
     setScrollProgress(0.0);
 
     setOrbState('done');
-    setOrbMessage(`L'expérience est prête pour "${output.brief.targetProduct.name}". Explorez au scroll !`);
+    setOrbMessage(
+      `L'expérience « ${plan.brief.targetProduct.name} » est prête en stratégie ${newManifest.strategy}. Explorez au scroll !`
+    );
     setIsOrbProcessing(false);
   };
 
-  // Handle Targeted Visual Inspector Patch
-  const handleApplyInspectorPatch = (instruction: string) => {
-    const lower = instruction.toLowerCase();
-    
-    setManifest((prev) => {
-      const updatedScenes = [...prev.scenes];
-      const activeIdx = scrollState.activeSceneIndex;
+  // Targeted Visual Inspector Patch: pure, immutable, returns the changes actually applied
+  const handleApplyInspectorPatch = (instruction: string): string[] => {
+    const result = applyInspectorPatch(manifest, scrollState.activeSceneIndex, instruction);
+    if (result.changes.length > 0) {
+      commitManifest(result.manifest);
+    }
+    return result.changes;
+  };
 
-      if (lower.includes('ralenti') || lower.includes('animation')) {
-        // Broaden scroll distance for smoother animation
-        updatedScenes[activeIdx].motionVectors = 'Amortissement cinématique étendu x1.5';
-      }
-      if (lower.includes('autre sens') || lower.includes('tourner')) {
-        updatedScenes[activeIdx].cameraChoreography.position[0] *= -1;
-      }
-      if (lower.includes('texte') || lower.includes('tard') || lower.includes('tôt')) {
-        updatedScenes[activeIdx].headline += ' (Ajusté)';
-      }
-      if (lower.includes('profondeur') || lower.includes('éclaté')) {
-        updatedScenes[activeIdx].explodedDistance = Math.min(1.0, updatedScenes[activeIdx].explodedDistance + 0.2);
-      }
-
-      return {
-        ...prev,
-        scenes: updatedScenes,
-        revisionId: `patch-${Date.now().toString(36)}`
-      };
-    });
+  // Acceptance tests are computed from real behaviour; nothing is hard-coded to PASS
+  type AcceptanceItem = { label: string; pass: boolean | null; detail: string };
+  const summarize = (items: AcceptanceItem[]) => {
+    const tested = items.filter((i) => i.pass !== null);
+    return { allPass: tested.every((i) => i.pass === true), passed: tested.filter((i) => i.pass).length, total: tested.length };
   };
 
   // Run Acceptance Test 1 (Instruction 28)
   const runAcceptanceTest1 = () => {
     const testPrompt = "Crée-moi une expérience premium pour cette montre mécanique. Je veux voir la matière brute, les pièces, le mécanisme, puis la montre qui s'assemble progressivement pendant le scroll.";
-    const planned = CreativeDirector.planExperience(testPrompt);
-    const audit = CinematicQualityGate.runAudit(manifest);
+    const { manifest: planned, plan } = createManifestFromPrompt(testPrompt);
+    const patch = applyInspectorPatch(planned, 1, 'ralentis cette animation');
+    const switched = withStrategy(planned, 'VIDEO_SCROLL');
+    const sceneNarrative = planned.qualityGateChecks.find((c) => c.id === 'chk-narr-01');
+    const strategyCheck = planned.qualityGateChecks.find((c) => c.id === 'chk-strat-01');
+
+    const items: AcceptanceItem[] = [
+      { label: 'Demande en langage naturel traitée par KAI / Orbe', pass: planned.brief.clientGoal === testPrompt, detail: `Prompt: "${testPrompt.slice(0, 45)}..."` },
+      { label: 'CreativeBrief produit avec ProductIdentity', pass: planned.brief.targetProduct.name.length > 0, detail: `Produit: ${planned.brief.targetProduct.name}` },
+      { label: 'VisualNarrative : 5 scènes contiguës 0 → 100 %', pass: sceneNarrative?.status === 'PASS', detail: planned.scenes.map((s) => s.name).join(' → ') },
+      { label: 'Stratégie sélectionnée avec motif structuré', pass: plan.strategyEvaluation.reason.length > 0, detail: `${planned.strategy} — ${plan.strategyEvaluation.reason.slice(0, 80)}...` },
+      { label: 'Cohérence stratégie ↔ capacités du manifeste', pass: strategyCheck?.status === 'PASS', detail: strategyCheck?.message ?? '' },
+      { label: 'Quality Gate sans échec', pass: planned.overallQualityStatus !== 'FAIL', detail: `Statut: ${planned.overallQualityStatus}` },
+      { label: 'Repli Mobile & Reduced-Motion configurés', pass: !!planned.fallbacks.mobileStrategy && !!planned.fallbacks.reducedMotionStrategy, detail: `${planned.fallbacks.mobileStrategy} / ${planned.fallbacks.reducedMotionStrategy}` },
+      { label: 'Visual Inspector modifie réellement la scène', pass: patch.changes.length > 0 && patch.manifest !== planned, detail: patch.changes.join(' · ') || 'Aucun changement' },
+      { label: 'Changement de stratégie propage les capacités', pass: switched.subCapabilities.includes('SCROLL_SCRUB_VIDEO'), detail: `Capacités: ${switched.subCapabilities.length}` },
+      { label: 'Build TypeScript / Vite', pass: null, detail: 'Hors runtime — exécuter npm run lint && npm run build' }
+    ];
 
     setAcceptanceTest1Results({
       testName: 'TEST ACCEPTATION 1 — Pipeline Complet KAI Cinématique',
-      status: 'SUCCESS',
-      verifiedItems: [
-        { label: 'Demande en langage naturel traitée par KAI / Orbe', pass: true, detail: `Prompt: "${testPrompt.slice(0, 45)}..."` },
-        { label: 'CreativeBrief produit avec ProductIdentity', pass: true, detail: `Produit: ${planned.brief.targetProduct.name}` },
-        { label: 'VisualNarrative généré (5 Scènes Dynamiques)', pass: true, detail: planned.scenes.map(s => s.name).join(' → ') },
-        { label: 'Stratégie sélectionnée avec motif structuré', pass: true, detail: `${planned.recommendedStrategy}` },
-        { label: 'ExperienceManifest conforme produit', pass: true, detail: `ID: ${manifest.experienceId}` },
-        { label: 'Progression au défilement opérationnelle (Scroll Director)', pass: true, detail: `Pos: ${(scrollProgress * 100).toFixed(0)}%` },
-        { label: 'Repli Mobile configuré', pass: true, detail: `${manifest.fallbacks.mobileStrategy}` },
-        { label: 'Repli Reduced-Motion configuré', pass: true, detail: `${manifest.fallbacks.reducedMotionStrategy}` },
-        { label: 'Compilation & Build réussi (Zéro TS error)', pass: true, detail: 'Vite build PASS' },
-        { label: 'Visual Inspector & Révision opérationnels', pass: true, detail: `Rev: ${manifest.revisionId}` },
-      ],
+      items,
+      summary: summarize(items),
       timestamp: new Date().toLocaleTimeString()
     });
   };
 
   // Run Acceptance Test 2 (Instruction 29)
   const runAcceptanceTest2 = () => {
-    // Scenario A: Real GLB
     const resA = ExperienceStrategyEngine.evaluateStrategy({ hasGlbModel: true });
-    // Scenario B: Only product images
     const resB = ExperienceStrategyEngine.evaluateStrategy({ hasGlbModel: false, hasProductPhotos: true });
-    // Scenario C: Generated cinematic video available
     const resC = ExperienceStrategyEngine.evaluateStrategy({ hasCinematicVideo: true });
-    // Scenario D: Weak mobile device profile
     const resD = ExperienceStrategyEngine.evaluateStrategy({ isMobileDevice: true });
+
+    const scenarios = [
+      { id: 'A', case: 'Modèle GLB/GLTF réel fourni', selectedStrategy: resA.selectedStrategy, expected: 'TRUE_3D', pass: resA.selectedStrategy === 'TRUE_3D', reason: resA.reason },
+      { id: 'B', case: 'Photos de référence uniquement (sans GLB lourd)', selectedStrategy: resB.selectedStrategy, expected: 'HYBRID | IMAGE_SEQUENCE', pass: resB.selectedStrategy === 'HYBRID' || resB.selectedStrategy === 'IMAGE_SEQUENCE', reason: resB.reason },
+      { id: 'C', case: 'Vidéo cinématique maîtresse disponible', selectedStrategy: resC.selectedStrategy, expected: 'VIDEO_SCROLL', pass: resC.selectedStrategy === 'VIDEO_SCROLL', reason: resC.reason },
+      { id: 'D', case: 'Profil mobile contraint (GPU/Batterie)', selectedStrategy: resD.selectedStrategy, expected: 'HYBRID | DOM_MOTION', pass: resD.selectedStrategy === 'HYBRID' || resD.selectedStrategy === 'DOM_MOTION', reason: resD.reason }
+    ];
 
     setAcceptanceTest2Results({
       testName: 'TEST ACCEPTATION 2 — Évaluation Dynamique des Stratégies selon les Assets',
-      status: 'SUCCESS',
-      scenarios: [
-        {
-          id: 'A',
-          case: 'Modèle GLB/GLTF Réel fourni',
-          selectedStrategy: resA.selectedStrategy,
-          expected: 'TRUE_3D',
-          pass: resA.selectedStrategy === 'TRUE_3D',
-          reason: resA.reason
-        },
-        {
-          id: 'B',
-          case: 'Photos de référence uniquement (sans GLB lourd)',
-          selectedStrategy: resB.selectedStrategy,
-          expected: 'HYBRID',
-          pass: resB.selectedStrategy === 'HYBRID' || resB.selectedStrategy === 'IMAGE_SEQUENCE',
-          reason: resB.reason
-        },
-        {
-          id: 'C',
-          case: 'Vidéo cinématique maîtresse disponible',
-          selectedStrategy: resC.selectedStrategy,
-          expected: 'VIDEO_SCROLL',
-          pass: resC.selectedStrategy === 'VIDEO_SCROLL',
-          reason: resC.reason
-        },
-        {
-          id: 'D',
-          case: 'Profil mobile contraint (GPU/Batterie)',
-          selectedStrategy: resD.selectedStrategy,
-          expected: 'HYBRID',
-          pass: resD.selectedStrategy === 'HYBRID' || resD.selectedStrategy === 'DOM_MOTION',
-          reason: resD.reason
-        }
-      ],
+      scenarios,
+      passed: scenarios.filter((s) => s.pass).length,
       timestamp: new Date().toLocaleTimeString()
     });
   };
@@ -289,7 +235,7 @@ export const KaiCinematicStudio: React.FC = () => {
           {(['HYBRID', 'TRUE_3D', 'VIDEO_SCROLL', 'IMAGE_SEQUENCE', 'DOM_MOTION'] as ExperienceStrategy[]).map((strat) => (
             <button
               key={strat}
-              onClick={() => setActiveStrategy(strat)}
+              onClick={() => commitManifest(withStrategy(manifest, strat))}
               className={`px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition-all ${
                 activeStrategy === strat
                   ? 'bg-gradient-to-r from-amber-400 to-indigo-500 text-slate-950 shadow-md shadow-amber-400/20'
@@ -299,6 +245,15 @@ export const KaiCinematicStudio: React.FC = () => {
               {strat}
             </button>
           ))}
+          <button
+            onClick={undoRevision}
+            disabled={history.length === 0}
+            className="ml-2 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-slate-800 bg-slate-900 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            title="Annuler la dernière révision du manifeste"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            <span>Annuler ({history.length})</span>
+          </button>
         </div>
 
         {/* Device & Accessibility Fallback Toggles */}
@@ -502,6 +457,22 @@ export const KaiCinematicStudio: React.FC = () => {
               </p>
             </div>
 
+            <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${manifest.experienceId}-${manifest.revisionId}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Télécharger</span>
+            </button>
             <button
               onClick={() => {
                 navigator.clipboard.writeText(JSON.stringify(manifest, null, 2));
@@ -513,6 +484,7 @@ export const KaiCinematicStudio: React.FC = () => {
               {copiedManifest ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
               <span>{copiedManifest ? 'Copié !' : 'Copier JSON'}</span>
             </button>
+            </div>
           </div>
 
           <pre className="p-4 rounded-2xl bg-black/80 border border-slate-800/80 text-xs font-mono text-slate-300 overflow-x-auto max-h-[600px] leading-relaxed">
@@ -604,14 +576,22 @@ export const KaiCinematicStudio: React.FC = () => {
             {acceptanceTest1Results && (
               <div className="p-4 rounded-2xl bg-slate-950 border border-amber-500/30 space-y-3 animate-fadeIn">
                 <div className="flex items-center justify-between text-xs font-mono">
-                  <span className="text-green-400 font-bold">✓ TOUS LES CONTRÔLES DU TEST 1 SONT VALIDÉS</span>
+                  <span className={acceptanceTest1Results.summary.allPass ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                    {acceptanceTest1Results.summary.allPass ? '✓' : '✗'} {acceptanceTest1Results.summary.passed}/{acceptanceTest1Results.summary.total} CONTRÔLES VALIDÉS
+                  </span>
                   <span className="text-slate-500">{acceptanceTest1Results.timestamp}</span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  {acceptanceTest1Results.verifiedItems.map((item: any, i: number) => (
+                  {acceptanceTest1Results.items.map((item: any, i: number) => (
                     <div key={i} className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                      {item.pass === null ? (
+                        <Clock className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                      ) : item.pass ? (
+                        <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      )}
                       <div>
                         <div className="font-semibold text-white">{item.label}</div>
                         <div className="text-[11px] font-mono text-slate-400">{item.detail}</div>
@@ -647,7 +627,9 @@ export const KaiCinematicStudio: React.FC = () => {
             {acceptanceTest2Results && (
               <div className="p-4 rounded-2xl bg-slate-950 border border-indigo-500/30 space-y-3 animate-fadeIn">
                 <div className="flex items-center justify-between text-xs font-mono">
-                  <span className="text-indigo-300 font-bold">✓ 4 SCÉNARIOS DISTINCTS ÉVALUÉS AVEC SUCCÈS</span>
+                  <span className={acceptanceTest2Results.passed === acceptanceTest2Results.scenarios.length ? 'text-indigo-300 font-bold' : 'text-red-400 font-bold'}>
+                    {acceptanceTest2Results.passed}/{acceptanceTest2Results.scenarios.length} SCÉNARIOS CONFORMES
+                  </span>
                   <span className="text-slate-500">{acceptanceTest2Results.timestamp}</span>
                 </div>
 
@@ -656,8 +638,8 @@ export const KaiCinematicStudio: React.FC = () => {
                     <div key={sc.id} className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-white">Cas {sc.id} : {sc.case}</span>
-                        <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono font-bold">
-                          Stratégie retenue: {sc.selectedStrategy}
+                        <span className={`px-2 py-0.5 rounded font-mono font-bold ${sc.pass ? 'bg-indigo-500/20 text-indigo-300' : 'bg-red-500/20 text-red-300'}`}>
+                          Retenue : {sc.selectedStrategy} (attendu : {sc.expected})
                         </span>
                       </div>
                       <p className="text-xs text-slate-400 leading-relaxed">

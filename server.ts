@@ -6,20 +6,69 @@ import os from 'os';
 import path from 'path';
 import { buildLoraPlan, normalizeLoraRequest } from './src/services/lora/loraPlanBuilder';
 
-dotenv.config();
-
 const app = express();
-// Port configurable : l'app Windows embarquée peut être lancée sur un autre port
-// si 3000 est déjà pris sur la machine.
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '0.0.0.0';
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 // `__dirname` n'existe qu'en CommonJS : le bundle de production est en CJS,
 // mais `npm run dev` (tsx) charge ce fichier en ESM. On retombe alors sur le
 // répertoire courant (la racine du dépôt).
 const APP_ROOT =
   typeof __dirname !== 'undefined' ? __dirname : process.cwd();
-const DIST_DIR = process.env.PINOKIO_DIST || path.resolve(APP_ROOT, 'dist');
+
+/**
+ * Le frontend compilé est cherché à côté du serveur puis un niveau au-dessus :
+ * dans l'app packagée il est dans `app/dist`, mais un bundle déplacé (tests,
+ * scripts) doit continuer à démarrer au lieu de mourir sur un chemin figé.
+ */
+function resolveDistDir(): string {
+  if (process.env.PINOKIO_DIST) return path.resolve(process.env.PINOKIO_DIST);
+  const candidates = [
+    path.resolve(APP_ROOT, 'dist'),
+    path.resolve(APP_ROOT, '..', 'dist'),
+    path.resolve(process.cwd(), 'dist'),
+  ];
+  return candidates.find((dir) => fs.existsSync(path.join(dir, 'index.html'))) || candidates[0];
+}
+
+const DIST_DIR = resolveDistDir();
+
+/**
+ * Fichier de configuration.
+ *
+ * Le lanceur Windows démarre `app/server.cjs` avec `app/` comme répertoire
+ * courant, alors que `.env` est livré à la racine du dossier de l'app : un
+ * `dotenv.config()` sec ignorait donc silencieusement les clés saisies par
+ * l'utilisateur. On cherche à plusieurs endroits, du plus proche au plus
+ * éloigné (le premier fichier trouvé gagne).
+ */
+const ENV_FILES = [
+  process.env.DOTENV_CONFIG_PATH,
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(APP_ROOT, '.env'),
+  path.resolve(APP_ROOT, '..', '.env'),
+].filter((candidate): candidate is string => Boolean(candidate));
+
+dotenv.config({ path: ENV_FILES, quiet: true } as dotenv.DotenvConfigOptions);
+
+// Lus après `.env` : ce fichier peut aussi changer le port et l'hôte
+// (ex. PORT=3400 quand 3000 est déjà pris sur la machine).
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
+ * Version affichée par /api/health : APP_VERSION quand le lanceur Windows la
+ * fournit, sinon celle de package.json (sinon « dev »).
+ */
+const APP_VERSION = (() => {
+  if (process.env.APP_VERSION) return process.env.APP_VERSION;
+  for (const candidate of [path.resolve(APP_ROOT, 'package.json'), path.resolve(APP_ROOT, '..', 'package.json')]) {
+    try {
+      return JSON.parse(fs.readFileSync(candidate, 'utf8')).version || 'dev';
+    } catch {
+      /* fichier absent (bundle isolé) : on essaie le suivant */
+    }
+  }
+  return 'dev';
+})();
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '30mb' }));
@@ -38,6 +87,42 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+// ============================================================================
+// HELPERS PARTAGÉS — clés IA, erreurs JSON, réseau
+// ============================================================================
+
+/** Providers réellement utilisables sur cette instance. */
+const aiProviderStatus = () => ({
+  gemini: Boolean(apiKey),
+  openrouter: Boolean(openRouterApiKey),
+  mistral: Boolean(mistralApiKey),
+});
+
+const hasAnyAiProvider = () => Object.values(aiProviderStatus()).some(Boolean);
+
+/**
+ * Réponse 503 quand aucune clé IA n'est configurée.
+ *
+ * Sans ce garde, chaque endpoint IA tentait un appel réseau, échouait avec
+ * « fetch failed » et renvoyait un 500 opaque : l'utilisateur ne pouvait pas
+ * deviner qu'il lui manquait simplement une clé dans `.env`.
+ */
+function respondNoAiKey(res: any, provider?: string) {
+  const status = aiProviderStatus();
+  const wanted = provider && provider !== 'gemini' ? provider : null;
+  const providerLabel = wanted
+    ? { openrouter: 'OpenRouter', mistral: 'Mistral AI' }[wanted] || wanted
+    : 'Gemini';
+  return res.status(503).json({
+    error: 'NO_AI_KEY',
+    message:
+      `Aucune clé IA n'est configurée pour ${providerLabel}. ` +
+      'Ouvrez le fichier .env (bouton « Réglages API ») et renseignez GEMINI_API_KEY, ' +
+      'OPENROUTER_API_KEY ou MISTRAL_API_KEY, puis relancez l’application.',
+    configuredProviders: status,
+  });
+}
 
 // Helper function to call OpenRouter API (OpenAI-compatible)
 async function callOpenRouter(modelName: string, messages: any[], systemPrompt: string) {
@@ -200,10 +285,13 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     app: 'pinokio-ai-studio',
-    version: process.env.APP_VERSION || 'dev',
+    version: APP_VERSION,
     production: IS_PRODUCTION,
     port: PORT,
+    // `hasApiKey` historique = Gemini seul ; `hasAnyApiKey` reflète la réalité
+    // (OpenRouter ou Mistral suffisent à faire fonctionner le copilote).
     hasApiKey: Boolean(apiKey),
+    hasAnyApiKey: hasAnyAiProvider(),
     providers: {
       gemini: { available: Boolean(apiKey), label: 'Gemini (Google GenAI)', configured: Boolean(apiKey) },
       openrouter: { available: Boolean(openRouterApiKey), label: 'OpenRouter (Multi-Provider)', configured: Boolean(openRouterApiKey) },
@@ -482,7 +570,10 @@ app.post('/api/logs/diagnose', async (req, res) => {
     }
 
     if (!targetLog) {
-      return res.status(404).json({ error: 'Log introuvable pour analyse.' });
+      return res.status(404).json({
+        error: 'LOG_NOT_FOUND',
+        message: 'Log introuvable : rechargez la liste des journaux puis réessayez.',
+      });
     }
 
     const diagnosisPrompt = `
@@ -506,6 +597,8 @@ Réponds avec une analyse structurée en français contenant :
 `;
 
     let reply = '';
+    // false = réponse issue des règles locales, pas d'un modèle de langage.
+    let aiGenerated = true;
     const selectedModelName = model || (provider === 'gemini' ? 'gemini-3.8-flash' : 'anthropic/claude-3.5-sonnet');
 
     if (provider === 'gemini' && apiKey) {
@@ -525,6 +618,7 @@ Réponds avec une analyse structurée en français contenant :
       });
       reply = response.text || "Analyse indisponible.";
     } else {
+      aiGenerated = false;
       reply = `**Diagnostic Hors-Ligne (Règles Expertes Pinokio)** :
 - Si l'erreur mentionne **CUDA out of memory** : Activez \`--lowvram --fp8 --cpu-offload\` dans \`args.txt\` et baissez la résolution à 832x480.
 - Si l'erreur mentionne **Port 7860/42000 already in use** : Un autre processus utilise le port. Utilisez \`taskkill /F /IM python.exe\` sous Windows 11.
@@ -535,6 +629,8 @@ Réponds avec une analyse structurée en français contenant :
       success: true,
       logId: targetLog.id,
       analysis: reply,
+      degraded: !aiGenerated,
+      source: aiGenerated ? 'ai' : 'offline_rules',
       timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
@@ -565,7 +661,13 @@ app.post(['/api/analyze-image', '/api/analyze-media'], async (req, res) => {
 
     const rawData = mediaBase64 || imageBase64;
     if (!rawData) {
-      return res.status(400).json({ error: 'Media or Image base64 data is required.' });
+      return res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: 'Une image ou une vidéo (base64) est requise pour l’analyse.',
+      });
+    }
+    if (!hasAnyAiProvider()) {
+      return respondNoAiKey(res, 'gemini');
     }
 
     const cleanBase64 = rawData.replace(/^data:(image|video)\/[a-z0-9.-]+;base64,/, '');
@@ -799,7 +901,10 @@ app.post('/api/chat', async (req, res) => {
     const { messages, context, attachments, provider = 'gemini', model = 'gemini-3.8-flash' } = req.body;
 
     if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: 'Messages array is required.' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Le tableau « messages » est requis.' });
+    }
+    if (!hasAnyAiProvider()) {
+      return respondNoAiKey(res, provider);
     }
 
     const systemPromptWithContext = `${PINOKIO_SYSTEM_INSTRUCTION}
@@ -910,61 +1015,93 @@ You are an expert AI Video & Pinokio Automation Assistant. For every user reques
       stack: error?.stack,
       context: { endpoint: '/api/chat', model: req.body?.model, provider: req.body?.provider },
     });
-    return res.status(500).json({
-      error: error?.message || 'Failed to generate assistant response.',
+    // Erreur venant du provider (quota, modèle inconnu, réseau) : 502 pour
+    // distinguer « l'amont a échoué » d'un vrai bug du serveur.
+    return res.status(502).json({
+      error: 'AI_PROVIDER_ERROR',
+      message: error?.message || 'Le fournisseur IA n’a pas répondu.',
     });
   }
 });
 
 // Endpoint: Test connection to Pinokio local instance or remote Home Server
 app.post('/api/test-pinokio-connection', async (req, res) => {
-  const { host = '127.0.0.1', port = 42000, targetApp = 'wan2gp' } = req.body;
-  const targetUrl = `http://${host}:${port}`;
+  const { host = '127.0.0.1', port = 42000, targetApp = 'wan2gp' } = req.body || {};
+  const portNumber = Number(port);
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    let reachable = false;
-    let details: any = { host, port, checkedUrl: targetUrl };
-
-    try {
-      const pingRes = await fetch(targetUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      reachable = pingRes.status < 500;
-      details.httpStatus = pingRes.status;
-      details.serverHeader = pingRes.headers.get('server') || 'Pinokio/Caddy Node Engine';
-    } catch (netErr: any) {
-      clearTimeout(timeoutId);
-      // Even if offline, return structured diagnostics
-      reachable = false;
-      details.error = netErr?.name === 'AbortError' ? 'Timeout (Serveur injoignable après 3.5s)' : (netErr?.message || 'Connexion refusée');
-    }
-
-    return res.json({
-      success: true,
-      connected: reachable,
-      testedEndpoint: targetUrl,
-      diagnostics: {
-        host,
-        port,
-        status: reachable ? 'ONLINE' : 'OFFLINE',
-        latencyMs: reachable ? Math.floor(Math.random() * 15 + 4) : null,
-        detectedApp: targetApp,
-        diskSaverActive: reachable,
-        caddyProxyDetected: reachable,
-        recommendation: reachable
-          ? `Connexion établie avec succès avec l'instance Pinokio sur ${host}:${port}.`
-          : `L'instance Pinokio sur ${host}:${port} n'est pas encore lancée. Vérifiez que Pinokio est ouvert ou lancez "pinokio run ${targetApp}".`,
-        details
-      }
-    });
-  } catch (err: any) {
-    return res.status(500).json({
+  if (typeof host !== 'string' || !/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return res.status(400).json({
       success: false,
-      error: err?.message || 'Erreur lors du test de connectivité Pinokio.',
+      error: 'BAD_HOST',
+      message: 'Hôte invalide : indiquez un nom ou une IP (ex. 127.0.0.1).',
     });
   }
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+    return res.status(400).json({
+      success: false,
+      error: 'BAD_PORT',
+      message: 'Port invalide : nombre entier entre 1 et 65535.',
+    });
+  }
+  // Même garde que le pont guaardvark : ce test est un proxy sortant, il ne
+  // doit pas permettre d'atteindre un hôte arbitraire depuis le PC.
+  if (!GUAARDVARK_ALLOW_REMOTE && !isLocalHost(host)) {
+    return res.status(403).json({
+      success: false,
+      error: 'REMOTE_NOT_ALLOWED',
+      message: `Hôte distant refusé (${host}) : seuls la machine locale et le réseau local sont testables.`,
+    });
+  }
+
+  // IPv6 littéral : sans crochets, `http://::1:7860` est une URL invalide.
+  const urlHost = host.includes(':') ? `[${host}]` : host;
+  const targetUrl = `http://${urlHost}:${portNumber}`;
+  const startedAt = Date.now();
+  const details: Record<string, unknown> = { host, port: portNumber, checkedUrl: targetUrl };
+  let reachable = false;
+  let serverHeader: string | undefined;
+  let pageHint = '';
+
+  try {
+    const response = await fetch(targetUrl, { signal: AbortSignal.timeout(3500) });
+    reachable = response.status < 500;
+    details.httpStatus = response.status;
+    serverHeader = response.headers.get('server') || undefined;
+    details.serverHeader = serverHeader;
+    // Indice de détection réel : on lit les premiers Ko de la page, pas une supposition.
+    pageHint = (await response.text().catch(() => '')).slice(0, 4000).toLowerCase();
+  } catch (error: any) {
+    details.error = describeNetworkError(error);
+  }
+
+  // Latence réellement mesurée (l'ancienne valeur était un aléatoire).
+  const latencyMs = Date.now() - startedAt;
+
+  return res.json({
+    success: true,
+    connected: reachable,
+    testedEndpoint: targetUrl,
+    diagnostics: {
+      host,
+      port: portNumber,
+      status: reachable ? 'ONLINE' : 'OFFLINE',
+      latencyMs,
+      requestedApp: targetApp,
+      // Renseigné uniquement si la réponse HTTP en donne la preuve.
+      detectedApp: !reachable
+        ? undefined
+        : pageHint.includes('wan2gp')
+        ? 'wan2gp'
+        : pageHint.includes('caddy')
+        ? 'caddy'
+        : undefined,
+      caddyProxyDetected: /caddy/i.test(serverHeader || ''),
+      recommendation: reachable
+        ? `Connexion établie avec l'instance Pinokio sur ${host}:${portNumber}.`
+        : `L'instance Pinokio sur ${host}:${portNumber} n'est pas joignable. Vérifiez que Pinokio est ouvert, ou lancez "pinokio run ${targetApp}".`,
+      details,
+    },
+  });
 });
 
 // Endpoint: Download / Generate Windows 11 1-Click Automated PowerShell & Batch Installer
@@ -1104,7 +1241,10 @@ pause
 // Endpoint: Generate Pinokio.js / install.json / run.json scripts for any repo or workflow
 app.post('/api/generate-pinokio-script', async (req, res) => {
   try {
-    const { appName, repoUrl, framework, customRequirements, vramTarget } = req.body;
+    const { appName, repoUrl, framework, customRequirements, vramTarget } = req.body || {};
+    if (!hasAnyAiProvider()) {
+      return respondNoAiKey(res, 'gemini');
+    }
 
     const prompt = `
 Generate a complete, fully functional Pinokio script suite for:
@@ -1249,9 +1389,14 @@ Génère une réponse JSON stricte avec la structure exacte suivante :
       const parsed = JSON.parse(response.text || '{}');
       return res.json({ success: true, ...parsed });
     } else {
-      // Deterministic fallback if API offline
+      // Démo déterministe quand aucune clé n'est configurée : on l'annonce
+      // explicitement pour ne pas faire passer une maquette pour une analyse IA.
       return res.json({
         success: true,
+        degraded: true,
+        source: 'local_demo',
+        notice:
+          'Aucune clé Gemini configurée : ce manifeste est une démo locale déterministe, pas une génération IA.',
         product: {
           name: "Aethelgard Genesis Tourbillon T33",
           category: "Haute Horlogerie Mécanique",
@@ -1601,9 +1746,36 @@ app.post('/api/lora/train/cancel', async (req, res) => {
 // loras/z_image...). Ce bloc liste ce dossier et sert les .safetensors en HTTP :
 // l'URL produite se colle directement dans le champ « Enter Lora URL » de WanGP,
 // ce qui évite tout copier-coller de fichier.
-const WANGP_LORAS_ROOT = path.resolve(
-  (process.env.WANGP_LORAS_ROOT || path.join(os.homedir(), 'pinokio', 'app', 'loras')).replace(/^~/, os.homedir())
-);
+/**
+ * Racine `loras/` de WanGP.
+ *
+ * Pinokio installe l'app WanGP dans un dossier dont le nom varie
+ * (`wan2gp`, `WanGP`, `Wan2GP`…) : une racine figée à `~/pinokio/app/loras`
+ * n'existe jamais, et la livraison du `.safetensors` échouait silencieusement.
+ * On prend donc la variable d'environnement si elle est définie, sinon le
+ * premier dossier réellement présent.
+ */
+const WANGP_LORAS_CANDIDATES = [
+  path.join(os.homedir(), 'pinokio', 'app', 'loras'),
+  path.join(os.homedir(), 'pinokio', 'app', 'wan2gp', 'loras'),
+  path.join(os.homedir(), 'pinokio', 'app', 'WanGP', 'loras'),
+  path.join(os.homedir(), 'pinokio', 'app', 'Wan2GP', 'loras'),
+  path.join(os.homedir(), 'WanGP', 'loras'),
+  path.join(os.homedir(), 'Wan2GP', 'loras'),
+];
+
+const WANGP_LORAS_ROOT_INFO = (() => {
+  const configured = process.env.WANGP_LORAS_ROOT?.trim();
+  if (configured) {
+    return { root: path.resolve(configured.replace(/^~/, os.homedir())), source: 'env' as const };
+  }
+  const detected = WANGP_LORAS_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  return detected
+    ? { root: path.resolve(detected), source: 'auto' as const }
+    : { root: path.resolve(WANGP_LORAS_CANDIDATES[0]), source: 'default' as const };
+})();
+
+const WANGP_LORAS_ROOT = WANGP_LORAS_ROOT_INFO.root;
 
 /** Sous-dossiers connus de WanGP : on n'expose rien d'autre. */
 const WANGP_LORA_FOLDERS = new Set([
@@ -1632,27 +1804,53 @@ function resolveWangpFolder(folder: string): { dir: string; key: string } | null
   return { dir, key: folder };
 }
 
+/**
+ * Lecture tolérante d'un dossier : un dossier supprimé ou verrouillé entre
+ * deux appels ne doit pas faire tomber tout l'endpoint en 500.
+ */
+function safeReadDir(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
 function listWangpLoras(folder: string) {
   const target = resolveWangpFolder(folder);
   if (!target) return null;
   const exists = fs.existsSync(target.dir);
   let files: any[] = [];
   if (exists) {
-    files = fs
-      .readdirSync(target.dir, { withFileTypes: true })
+    files = safeReadDir(target.dir)
       .filter((entry) => entry.isFile() && SAFETENSORS_NAME.test(entry.name))
       .map((entry) => {
-        const stat = fs.statSync(path.join(target.dir, entry.name));
+        let size = 0;
+        let modifiedAt = new Date(0).toISOString();
+        try {
+          const stat = fs.statSync(path.join(target.dir, entry.name));
+          size = stat.size;
+          modifiedAt = stat.mtime.toISOString();
+        } catch {
+          /* fichier disparu entre le listing et le stat */
+        }
         return {
           name: entry.name,
-          size: stat.size,
-          modifiedAt: stat.mtime.toISOString(),
+          size,
+          modifiedAt,
           url: `/api/lora/wangp/${folder}/${encodeURIComponent(entry.name)}`,
         };
       })
       .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
   }
-  return { root: WANGP_LORAS_ROOT, folder, path: target.dir, exists, files };
+  return {
+    root: WANGP_LORAS_ROOT,
+    rootSource: WANGP_LORAS_ROOT_INFO.source,
+    folder,
+    path: target.dir,
+    exists,
+    files,
+  };
 }
 
 // Endpoint: état du dossier LoRA d'une famille de modèles WanGP
@@ -1672,18 +1870,23 @@ app.get('/api/lora/wangp/:folder', (req, res) => {
 app.get('/api/lora/wangp', (req, res) => {
   const rootExists = fs.existsSync(WANGP_LORAS_ROOT);
   const folders = rootExists
-    ? fs
-        .readdirSync(WANGP_LORAS_ROOT, { withFileTypes: true })
+    ? safeReadDir(WANGP_LORAS_ROOT)
         .filter((entry) => entry.isDirectory() && WANGP_LORA_FOLDERS.has(entry.name))
         .map((entry) => {
           const dir = path.join(WANGP_LORAS_ROOT, entry.name);
-          const count = fs
-            .readdirSync(dir)
-            .filter((name) => SAFETENSORS_NAME.test(name)).length;
+          const count = safeReadDir(dir).filter((entry2) => SAFETENSORS_NAME.test(entry2.name)).length;
           return { key: entry.name, path: dir, count };
         })
     : [];
-  return res.json({ root: WANGP_LORAS_ROOT, exists: rootExists, folders });
+  return res.json({
+    root: WANGP_LORAS_ROOT,
+    rootSource: WANGP_LORAS_ROOT_INFO.source,
+    exists: rootExists,
+    folders,
+    hint: rootExists
+      ? undefined
+      : 'Aucun dossier loras/ trouvé : renseignez WANGP_LORAS_ROOT (ex. C:\\pinokio\\app\\wan2gp\\loras) ou copiez le fichier à la main.',
+  });
 });
 
 // Endpoint: téléchargement d'un .safetensors (URL à coller dans WanGP)
@@ -1702,6 +1905,49 @@ app.get('/api/lora/wangp/:folder/:name', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.setHeader('Cache-Control', 'no-store');
   return fs.createReadStream(filePath).pipe(res);
+});
+
+// ============================================================================
+// GESTION D'ERREURS — toujours du JSON sur /api/*
+// ============================================================================
+// Sans ces deux middlewares, un corps JSON invalide renvoyait la page HTML
+// d'erreur d'Express et une route /api inconnue tombait sur le fallback SPA
+// (HTTP 200 + HTML) : le client, qui fait `res.json()`, cassait silencieusement.
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    error: 'NOT_FOUND',
+    message: `Route API inconnue : ${req.method} /api${req.path}`,
+  });
+});
+
+app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(error);
+
+  const status = Number(error?.status || error?.statusCode || 500);
+  const isBodyError = error?.type === 'entity.parse.failed';
+  const isTooLarge = error?.type === 'entity.too.large';
+
+  // Une requête mal formée est de la responsabilité du client : la consigner
+  // remplirait le journal d'erreurs pour rien. Seules les vraies pannes sont
+  // enregistrées.
+  if (status >= 500) {
+    logSystemError({
+      source: 'server',
+      level: 'error',
+      title: `Erreur serveur (${status})`,
+      message: error?.message || 'Erreur inattendue.',
+      context: { endpoint: req.originalUrl, method: req.method },
+    });
+  }
+
+  return res.status(isBodyError ? 400 : isTooLarge ? 413 : status).json({
+    error: isBodyError ? 'INVALID_JSON' : isTooLarge ? 'PAYLOAD_TOO_LARGE' : 'SERVER_ERROR',
+    message: isBodyError
+      ? 'Le corps de la requête n’est pas un JSON valide.'
+      : isTooLarge
+      ? 'Charge trop volumineuse : réduisez l’image ou la vidéo envoyée.'
+      : error?.message || 'Erreur interne du serveur.',
+  });
 });
 
 // Mount Vite in development or static files in production

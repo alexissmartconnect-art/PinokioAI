@@ -9,3 +9,6 @@ coverage/
 
 # Packaging Windows
 release/
+
+# Bac à sable local (bundles de test, sondes)
+.tmp/

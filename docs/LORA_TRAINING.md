@@ -64,7 +64,11 @@ Deux façons de livrer le fichier, toutes deux présentées dans le panneau **Li
 2. **Sans copie** — le serveur liste le dossier et sert chaque `.safetensors` en HTTP ;
    l'URL affichée se colle dans le champ **« Enter Lora URL »** de WanGP, qui la télécharge.
 
-La racine est configurable : `WANGP_LORAS_ROOT` (défaut `~/pinokio/app/loras`). Seuls les
+La racine est configurable : `WANGP_LORAS_ROOT` (prioritaire). Sinon l'app détecte
+automatiquement `~/pinokio/app/loras`, `~/pinokio/app/wan2gp/loras`,
+`~/pinokio/app/WanGP/loras`, `~/pinokio/app/Wan2GP/loras`, `~/WanGP/loras` ou
+`~/Wan2GP/loras`, et retombe sinon sur `~/pinokio/app/loras`. La réponse de
+`/api/lora/wangp` indique la racine retenue (`rootSource`: `env` | `auto` | `default`). Seuls les
 sous-dossiers connus de WanGP et les `.safetensors` sont exposés, avec un garde-fou contre
 les traversées de chemin.
 

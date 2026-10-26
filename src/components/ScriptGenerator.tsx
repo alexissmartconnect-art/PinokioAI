@@ -27,11 +27,15 @@ export const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({ selectedVram }
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedScript, setGeneratedScript] = useState<any | null>(null);
+  // Renseigné quand l'IA n'est pas disponible : le script affiché est alors un
+  // gabarit local, et l'utilisateur doit le savoir.
+  const [generationNotice, setGenerationNotice] = useState<string | null>(null);
   const [activeScriptTab, setActiveScriptTab] = useState<'pinokioJs' | 'installJson' | 'runJson' | 'argsTxt'>('pinokioJs');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const handleGenerate = async () => {
     setIsGenerating(true);
+    setGenerationNotice(null);
     try {
       const res = await fetch('/api/generate-pinokio-script', {
         method: 'POST',
@@ -45,11 +49,17 @@ export const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({ selectedVram }
         }),
       });
 
-      if (!res.ok) throw new Error('Erreur lors de la génération du script Pinokio');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.message || `Erreur serveur (${res.status})`);
+      }
       const data = await res.json();
       setGeneratedScript(data);
     } catch (err: any) {
       console.error('Script generation error:', err);
+      setGenerationNotice(
+        `Génération IA indisponible (${err?.message || 'erreur réseau'}) : le script ci-dessous est un gabarit local, pas une génération IA.`
+      );
       // Fallback robust default if offline or transient error
       setGeneratedScript({
         pinokioJs: `module.exports = {
@@ -284,6 +294,11 @@ export const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({ selectedVram }
             {/* Code Content */}
             {generatedScript ? (
               <div className="space-y-4">
+                {generationNotice && (
+                  <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-800/80 text-xs text-amber-200">
+                    {generationNotice}
+                  </div>
+                )}
                 <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 font-mono overflow-x-auto max-h-[460px] leading-relaxed select-all">
                   {typeof generatedScript[activeScriptTab] === 'object'
                     ? JSON.stringify(generatedScript[activeScriptTab], null, 2)

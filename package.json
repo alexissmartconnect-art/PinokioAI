@@ -1,7 +1,7 @@
 {
-  "name": "react-example",
+  "name": "pinokio-ai-studio",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -9,7 +9,11 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "icon": "node scripts/make-icon.mjs",
+    "package:win": "node scripts/package-windows.mjs",
+    "package:win:full": "node scripts/package-windows.mjs --with-node",
+    "start:prod": "NODE_ENV=production node app/server.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -32,8 +36,10 @@
     "@types/three": "^0.186.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "sharp": "^0.35.5",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "description": "Pinokio AI Studio & Copilot \u2014 LoRA training plan, Wan2GP delivery, LTX Director, VRAM doctor (web app + Windows 11 bundle)"
 }

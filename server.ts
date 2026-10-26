@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -10,7 +9,12 @@ import { buildLoraPlan, normalizeLoraRequest } from './src/services/lora/loraPla
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Port configurable : l'app Windows embarquée peut être lancée sur un autre port
+// si 3000 est déjà pris sur la machine.
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const DIST_DIR = process.env.PINOKIO_DIST || path.resolve(__dirname, 'dist');
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '30mb' }));
@@ -190,6 +194,10 @@ function logSystemError(entry: Omit<ServerErrorLog, 'id' | 'timestamp'>) {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    app: 'pinokio-ai-studio',
+    version: process.env.APP_VERSION || 'dev',
+    production: IS_PRODUCTION,
+    port: PORT,
     hasApiKey: Boolean(apiKey),
     providers: {
       gemini: { available: Boolean(apiKey), label: 'Gemini (Google GenAI)', configured: Boolean(apiKey) },
@@ -1693,21 +1701,43 @@ app.get('/api/lora/wangp/:folder/:name', (req, res) => {
 
 // Mount Vite in development or static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  if (!IS_PRODUCTION) {
+    // Import dynamique : en production (app packagée) vite n'est jamais chargé
+    // et n'a pas besoin d'être livré avec l'application.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true as const },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const indexFile = path.join(DIST_DIR, 'index.html');
+    if (!fs.existsSync(indexFile)) {
+      console.error(
+        `[fatal] Frontend introuvable : ${indexFile}\n` +
+          'Lancez `npm run build` (ou `npm run package:win`) avant de démarrer en production.'
+      );
+      process.exit(1);
+    }
+    app.use(express.static(DIST_DIR, { index: false, maxAge: '1h' }));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(indexFile);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Pinokio Copilot Server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Pinokio AI Studio prêt : http://127.0.0.1:${PORT} (écoute ${HOST}:${PORT})`);
+  });
+
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(
+        `[fatal] Le port ${PORT} est déjà utilisé. Relancez avec PORT=3100 (ou définissez PORT dans .env).`
+      );
+      process.exit(2);
+    }
+    console.error('[fatal]', error);
+    process.exit(1);
   });
 }
 

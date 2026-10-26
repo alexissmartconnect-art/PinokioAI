@@ -14,7 +14,12 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const DIST_DIR = process.env.PINOKIO_DIST || path.resolve(__dirname, 'dist');
+// `__dirname` n'existe qu'en CommonJS : le bundle de production est en CJS,
+// mais `npm run dev` (tsx) charge ce fichier en ESM. On retombe alors sur le
+// répertoire courant (la racine du dépôt).
+const APP_ROOT =
+  typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+const DIST_DIR = process.env.PINOKIO_DIST || path.resolve(APP_ROOT, 'dist');
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '30mb' }));

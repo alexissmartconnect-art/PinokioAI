@@ -113,10 +113,18 @@ jobs:
             } catch { }
           }
           if (-not $ok) {
-            Get-Content (Join-Path $env:TEMP 'srv.err.log') -ErrorAction SilentlyContinue
-            Get-Content (Join-Path $env:TEMP 'srv.out.log') -ErrorAction SilentlyContinue
+            $err = (Get-Content (Join-Path $env:TEMP 'srv.err.log') -ErrorAction SilentlyContinue | Select-Object -Last 25) -join "`n"
+            $out = (Get-Content (Join-Path $env:TEMP 'srv.out.log') -ErrorAction SilentlyContinue | Select-Object -Last 25) -join "`n"
+            $state = if ($proc.HasExited) { "process exited with code $($proc.ExitCode)" } else { 'process still running' }
+            $listening = (Get-NetTCPConnection -LocalPort 3917 -ErrorAction SilentlyContinue | Measure-Object).Count
+            Write-Host "--- stderr ---"; Write-Host $err
+            Write-Host "--- stdout ---"; Write-Host $out
+            # Annotation lisible par l'API (les logs bruts du runner ne le sont pas ici).
+            $detail = "state=$state listening=$listening`nSTDERR:`n$err`nSTDOUT:`n$out"
+            $encoded = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error title=Smoke test: serveur packagé KO::$encoded"
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            throw 'Le serveur packagé ne répond pas sur /api/health'
+            exit 1
           }
 
           $page = Invoke-WebRequest -Uri 'http://127.0.0.1:3917/' -UseBasicParsing -TimeoutSec 5

@@ -43,9 +43,14 @@ function Get-NodePath {
 }
 
 function Test-Server([int]$Port) {
+    # On vérifie que le port répond bien « pinokio-ai-studio » : un autre
+    # serveur sur 3000 (dev server, autre app…) renvoyait 200 et le lanceur
+    # ouvrait alors la mauvaise page.
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -UseBasicParsing -TimeoutSec 2
-        return ($response.StatusCode -eq 200)
+        if ($response.StatusCode -ne 200) { return $false }
+        $payload = $response.Content | ConvertFrom-Json
+        return ($payload.app -eq 'pinokio-ai-studio')
     } catch {
         return $false
     }

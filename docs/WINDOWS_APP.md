@@ -60,7 +60,9 @@ Pinokio AI Studio/
 ## 3. Comment ça marche
 
 1. `Pinokio AI Studio.vbs` appelle `Launcher.ps1` en PowerShell caché.
-2. Le lanceur cherche un serveur déjà actif (`/api/health` sur 3000, 3100, 3200, 3300).
+2. Le lanceur cherche un serveur déjà actif (`/api/health` sur le port de `.env`, puis
+   3000, 3100, 3200, 3300) et vérifie que la réponse vient bien de `pinokio-ai-studio`
+   (`"app": "pinokio-ai-studio"`), sinon il démarre le sien.
    S'il n'y en a pas, il démarre `node app/server.cjs` avec `NODE_ENV=production`,
    écrit les logs dans `logs/` et attend que `/api/health` réponde (15 s max).
 3. Il ouvre ensuite `http://127.0.0.1:<port>/` dans une fenêtre app (Edge, sinon Chrome,
@@ -87,6 +89,10 @@ HOST=0.0.0.0
 
 Sur Windows, utilisez des **slashs** (`C:/Users/...`) ou doublez les antislashs.
 
+Ce `.env` (à la racine du dossier de l'app) est lu au démarrage, quel que soit le
+lanceur utilisé : le serveur cherche `.env` dans le répertoire courant, puis à côté
+de `app/server.cjs`, puis un niveau au-dessus. `PORT` et `HOST` y sont pris en compte.
+
 ## 5. Dépannage
 
 | Symptôme | Cause / solution |
@@ -94,6 +100,7 @@ Sur Windows, utilisez des **slashs** (`C:/Users/...`) ou doublez les antislashs.
 | SmartScreen « Windows a protégé votre PC » | fichier téléchargé : *Informations complémentaires → Exécuter quand même* |
 | « Node.js est introuvable » | relancer `Setup.bat` (connexion nécessaire) ou installer Node.js LTS |
 | Le port est déjà utilisé | l'app essaie 3000→3300 ; sinon `PORT=3400` dans `.env` |
+| Les clés du `.env` sont ignorées | vérifier qu'il est bien dans le dossier de l'app (à côté de `Setup.bat`) |
 | Rien ne s'ouvre | lancer `Pinokio AI Studio (console).bat` et lire l'erreur |
 | La fenêtre reste blanche | `logs/server.err.log` ; vérifier que `app/dist/index.html` existe |
 | Raccourci cassé après déplacement | relancer `Install-Shortcuts.ps1` |

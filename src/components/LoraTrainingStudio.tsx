@@ -985,6 +985,8 @@ export const LoraTrainingStudio: React.FC<LoraTrainingStudioProps> = ({ selected
                   </p>
                   <p className="text-[10px] font-mono text-slate-500 break-all">
                     racine loras : {wangp?.root || '…'}
+                    {wangp?.rootSource === 'auto' && ' (détectée)'}
+                    {wangp?.rootSource === 'env' && ' (WANGP_LORAS_ROOT)'}
                   </p>
                   <p className="text-[11px] text-slate-400">
                     Échelle conseillée : <span className="text-amber-200 font-semibold">{plan.wangp.strengthHint}</span>
@@ -1024,9 +1026,16 @@ export const LoraTrainingStudio: React.FC<LoraTrainingStudioProps> = ({ selected
                   )}
 
                   {wangp && !wangp.exists && !wangpError && (
-                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-100">
-                      Le dossier n’existe pas encore : il sera créé par WanGP au premier usage, ou lancez
-                      le script de copie.
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-100 space-y-1">
+                      <p>
+                        Le dossier n’existe pas encore : il sera créé par WanGP au premier usage, ou lancez
+                        le script de copie.
+                      </p>
+                      <p className="font-mono text-[10px] text-amber-200/80 break-all">{wangp.root}</p>
+                      <p className="text-[10px] text-amber-200/70">
+                        Mauvais emplacement ? Renseignez <span className="font-mono">WANGP_LORAS_ROOT</span> dans
+                        le fichier .env puis relancez l’application.
+                      </p>
                     </div>
                   )}
 

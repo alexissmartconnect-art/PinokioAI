@@ -355,6 +355,7 @@ export interface VisualInspectorElement {
 // ============================================================================
 
 export type LoraBaseModelId =
+  | 'minimax_h3'     // MiniMax H3 FL2VA Pruned 20B (vidéo, ai-toolkit)
   | 'wan2.1_14b'     // Wan 2.1 / 2.2 14B (vidéo, musubi-tuner)
   | 'wan2.1_1.3b'    // Wan 2.1 1.3B (vidéo, GPU pauvres)
   | 'flux1_dev'      // FLUX.1 dev (image, ai-toolkit)
@@ -387,6 +388,8 @@ export interface LoraTrainingSettings {
   gradientCheckpointing: boolean;
   cacheLatents: boolean;
   blocksToSwap: number;
+  /** Layer offloading du transformer (ai-toolkit low_vram) : indispensable sur H3 sous 24 Go. */
+  lowVram: boolean;
   seed: number;
 }
 
@@ -439,6 +442,31 @@ export interface LoraArtifact {
   content: string;
 }
 
+/** Où déposer le .safetensors pour que WanGP (Wan2GP) le voie. */
+export interface LoraWanGpTarget {
+  /** Clé du sous-dossier `loras/<key>` de WanGP, absente si le modèle n'y existe pas. */
+  folder?: string;
+  filename: string;
+  pathHint: string;
+  strengthHint: string;
+  note: string;
+}
+
+export interface LoraWanGpFile {
+  name: string;
+  size: number;
+  modifiedAt: string;
+  url: string;
+}
+
+export interface LoraWanGpFolderInfo {
+  root: string;
+  folder?: string;
+  path: string;
+  exists: boolean;
+  files: LoraWanGpFile[];
+}
+
 export interface LoraGuaardvarkBinding {
   baseModelId: 'zimage-turbo' | 'flux-dev' | 'sdxl-legacy';
   trainReady: boolean;
@@ -462,6 +490,7 @@ export interface LoraPlan {
   issues: LoraPlanIssue[];
   artifacts: LoraArtifact[];
   guaardvark: LoraGuaardvarkBinding;
+  wangp: LoraWanGpTarget;
   createdAt: string;
 }
 

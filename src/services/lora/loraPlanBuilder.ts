@@ -25,6 +25,7 @@ import type {
   LoraPlanRequest,
   LoraTrainFramework,
   LoraTrainingSettings,
+  LoraWanGpTarget,
 } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,16 @@ export interface LoraBaseModelPreset {
   secondsPerStepMps?: number;
   supportsBlocksToSwap: boolean;
   maxBlocksToSwap: number;
+  /** ai-toolkit low_vram / layer offloading disponible (H3 surtout). */
+  supportsLowVram?: boolean;
+  /** Empreinte VRAM à nativeResolution quand l'offloading est actif. */
+  vramLowMb?: number;
+  /** Sous-dossier `loras/<key>` de WanGP ; absent si le modèle n'y existe pas. */
+  wangpFolder?: string;
+  /** Rang visé quand la carte est large (défaut : 32). H3 reste à 16. */
+  bigGpuRank?: number;
+  /** alpha = rank (défaut des recettes kohya / guaardvark / H3). */
+  alphaEqualsRank?: boolean;
   guaardvarkBaseModelId: 'zimage-turbo' | 'flux-dev' | 'sdxl-legacy';
   guaardvarkTrainReady: boolean;
   docsUrl: string;
@@ -92,6 +103,46 @@ export interface LoraBaseModelPreset {
 }
 
 export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
+  minimax_h3: {
+    id: 'minimax_h3',
+    label: 'MiniMax H3 FL2VA Pruned 20B',
+    shortLabel: 'MiniMax H3',
+    family: 'video',
+    repoId: 'Comfy-Org/MiniMax-H3',
+    weightsHint:
+      'Comfy-Org/MiniMax-H3 · minimax_h3_fl2va_pruned_int8_convrot (20,97 Go) + Qwen3-VL-32B nvfp4 AWQ',
+    framework: 'ai-toolkit',
+    frameworkLabel: 'ai-toolkit · arch minimax_h3',
+    nativeResolution: 512,
+    resolutions: [384, 512, 768],
+    rankOptions: [8, 16, 32],
+    defaultRank: 16,
+    maxRank: 32,
+    stepsPerImage: 90,
+    minSteps: 800,
+    maxSteps: 3000,
+    defaultClassToken: 'person',
+    minVramGb: 12,
+    comfortableVramGb: 24,
+    vramBaseMb: 19000,
+    vramLowMb: 10200,
+    supportsLowVram: true,
+    bigGpuRank: 16,
+    alphaEqualsRank: true,
+    secondsPerStep: 4.2,
+    supportsBlocksToSwap: false,
+    maxBlocksToSwap: 0,
+    guaardvarkBaseModelId: 'flux-dev',
+    guaardvarkTrainReady: false,
+    wangpFolder: 'minimax_h3',
+    docsUrl: 'https://ostris.com/docs/ai-toolkit/models/minimax-h3',
+    notes: [
+      'C’est le modèle que WanGP appelle « MiniMax H3 FL2VA Pruned 20B » : un LoRA entraîné ici se dépose dans loras/minimax_h3/.',
+      'H3 est guidance-distilled : pas de CFG ni de negative prompt, et l’adaptateur de training ostris doit rester actif pendant l’entraînement (jamais fusionné).',
+      'Les couches adaln_proj sont exclues (network_kwargs.ignore_if_contains) : ce sont elles que le checkpoint pruned a repliées dans adaln_t_table.',
+      'Entraîné sur le build pruned : WanGP sait malgré tout relire un LoRA rank 8 ou rank 64 (traduction automatique via lora_affine).',
+    ],
+  },
   'wan2.1_14b': {
     id: 'wan2.1_14b',
     label: 'Wan 2.1 / 2.2 14B',
@@ -118,6 +169,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
     maxBlocksToSwap: 40,
     guaardvarkBaseModelId: 'flux-dev',
     guaardvarkTrainReady: false,
+    wangpFolder: 'wan_i2v',
     docsUrl: 'https://github.com/kohya-ss/musubi-tuner',
     notes: [
       'Le LoRA vidéo Wan 14B se pilote en 480p : au-delà, la VRAM explose pour un gain visuel faible.',
@@ -151,6 +203,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
     maxBlocksToSwap: 20,
     guaardvarkBaseModelId: 'flux-dev',
     guaardvarkTrainReady: false,
+    wangpFolder: 'wan_1.3B',
     docsUrl: 'https://github.com/kohya-ss/musubi-tuner',
     notes: [
       'Le meilleur point d’entrée LoRA vidéo sur 8 Go : même recette que le 14B, 10× plus rapide.',
@@ -183,6 +236,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
     maxBlocksToSwap: 0,
     guaardvarkBaseModelId: 'flux-dev',
     guaardvarkTrainReady: false,
+    wangpFolder: 'flux',
     docsUrl: 'https://github.com/ostris/ai-toolkit',
     notes: [
       'FLUX se LoRA en 1024 : descendre à 512 donne des visages mous même avec 3000 steps.',
@@ -250,6 +304,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
     maxBlocksToSwap: 0,
     guaardvarkBaseModelId: 'zimage-turbo',
     guaardvarkTrainReady: true,
+    wangpFolder: 'z_image',
     docsUrl: 'https://github.com/guaardvark/guaardvark/tree/main/plugins/lora_trainer',
     notes: [
       'C’est le backend par défaut de guaardvark : 512 px est son réglage sûr pour 16 Go.',
@@ -283,6 +338,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
     maxBlocksToSwap: 0,
     guaardvarkBaseModelId: 'flux-dev',
     guaardvarkTrainReady: false,
+    wangpFolder: 'ltxv',
     docsUrl: 'https://github.com/Lightricks/LTX-Video/tree/main/ltx-trainer',
     notes: [
       'LTX est un DiT rapide : un LoRA de style/mouvement converge en 600–900 steps.',
@@ -292,6 +348,7 @@ export const LORA_BASE_MODELS: Record<LoraBaseModelId, LoraBaseModelPreset> = {
 };
 
 export const LORA_BASE_MODEL_ORDER: LoraBaseModelId[] = [
+  'minimax_h3',
   'wan2.1_14b',
   'wan2.1_1.3b',
   'flux1_dev',
@@ -349,6 +406,7 @@ interface VramInput {
   precision: LoraTrainingSettings['precision'];
   gradientCheckpointing: boolean;
   blocksToSwap: number;
+  lowVram?: boolean;
 }
 
 export function estimateVramMb(preset: LoraBaseModelPreset, input: VramInput): number {
@@ -360,7 +418,12 @@ export function estimateVramMb(preset: LoraBaseModelPreset, input: VramInput): n
   const swapScale = preset.supportsBlocksToSwap && input.blocksToSwap > 0
     ? Math.max(0.5, 1 - input.blocksToSwap * 0.035)
     : 1;
-  return Math.round(preset.vramBaseMb * resScale * rankScale * batchScale * precisionScale * gcScale * swapScale);
+  // ai-toolkit low_vram / layer offloading : le transformer sort de la VRAM
+  // couche par couche (plus lent, mais c'est ce qui fait tenir H3 sur 12 Go).
+  const lowVramScale = input.lowVram && preset.vramLowMb ? preset.vramLowMb / preset.vramBaseMb : 1;
+  return Math.round(
+    preset.vramBaseMb * resScale * rankScale * batchScale * precisionScale * gcScale * swapScale * lowVramScale
+  );
 }
 
 export function estimateStepSeconds(
@@ -390,13 +453,14 @@ export function recommendSettings(
 
   const gradientCheckpointing = vramGb <= preset.comfortableVramGb || isMac(hardware);
   const precision: LoraTrainingSettings['precision'] = 'bf16';
+  const lowVram = Boolean(preset.supportsLowVram) && vramGb < preset.comfortableVramGb;
 
   // Rang : on garde le rang de référence sur les grosses cartes, on le divise
   // sur les petites (un rang élevé coûte de la VRAM sans aider si le dataset
   // est petit).
   const rank = clamp(
     vramGb >= 24
-      ? Math.max(preset.defaultRank, 32)
+      ? Math.max(preset.defaultRank, preset.bigGpuRank ?? 32)
       : vramGb >= 12
       ? preset.defaultRank
       : Math.max(8, Math.round(preset.defaultRank / 2)),
@@ -406,7 +470,7 @@ export function recommendSettings(
   // guaardvark (Z-Image/SDXL) entraîne en alpha = rank ; les recettes vidéo et
   // FLUX utilisent alpha = rank/2, plus stable à l'échelle d'application.
   const alpha =
-    preset.framework === 'kohya' || preset.framework === 'guaardvark'
+    preset.alphaEqualsRank || preset.framework === 'kohya' || preset.framework === 'guaardvark'
       ? rank
       : Math.max(8, Math.round(rank / 2));
 
@@ -439,6 +503,7 @@ export function recommendSettings(
         precision,
         gradientCheckpointing,
         blocksToSwap: swap,
+        lowVram,
       });
       if (mb <= budget) {
         resolution = candidate;
@@ -467,6 +532,7 @@ export function recommendSettings(
     gradientCheckpointing,
     cacheLatents: !isMac(hardware) || preset.framework !== 'musubi',
     blocksToSwap,
+    lowVram,
     seed: 42,
   };
 }
@@ -486,7 +552,9 @@ export const DEFAULT_DATASET: LoraDatasetConfig = {
 };
 
 export function defaultLoraRequest(hardware: HardwareVram = '8GB'): LoraPlanRequest {
-  const preset = LORA_BASE_MODELS['sdxl'];
+  // MiniMax H3 par défaut : c'est la base que WanGP sert le plus (FL2VA Pruned 20B),
+  // donc celle où un LoRA d'identité atterrit directement dans « Advanced > Loras ».
+  const preset = LORA_BASE_MODELS['minimax_h3'];
   const dataset: LoraDatasetConfig = { ...DEFAULT_DATASET };
   return {
     baseModel: preset.id,
@@ -509,7 +577,7 @@ export function normalizeLoraRequest(raw: any): LoraPlanRequest {
     : '8GB';
   const baseModel: LoraBaseModelId = raw?.baseModel && LORA_BASE_MODELS[raw.baseModel as LoraBaseModelId]
     ? (raw.baseModel as LoraBaseModelId)
-    : 'sdxl';
+    : 'minimax_h3';
   const preset = LORA_BASE_MODELS[baseModel];
 
   const dataset: LoraDatasetConfig = {
@@ -559,6 +627,11 @@ export function normalizeLoraRequest(raw: any): LoraPlanRequest {
     blocksToSwap: preset.supportsBlocksToSwap
       ? clamp(safeInt(incoming.blocksToSwap, recommended.blocksToSwap), 0, preset.maxBlocksToSwap)
       : 0,
+    lowVram: preset.supportsLowVram
+      ? typeof incoming.lowVram === 'boolean'
+        ? incoming.lowVram
+        : recommended.lowVram
+      : false,
     seed: clamp(safeInt(incoming.seed, 42), 0, 2 ** 31 - 1),
   };
 
@@ -674,7 +747,7 @@ function buildIssues(
       fix: 'Choisissez un jeton rare, ex. « pinokio_subject ».',
     });
   }
-  if (preset.framework === 'ai-toolkit' && settings.resolution < 1024) {
+  if (preset.id === 'flux1_dev' && settings.resolution < 1024) {
     issues.push({
       level: 'warning',
       code: 'FLUX_LOW_RES',
@@ -730,7 +803,9 @@ function buildIssues(
       fix: 'Entraînez le LoRA sur Wan 1.3B puis réutilisez-le (partiellement) sur le 14B.',
     });
   }
-  if (!preset.guaardvarkTrainReady) {
+  // guaardvark ne concerne que les bases image de son registre : inutile de
+  // polluer la liste pour un LoRA Wan ou H3 qui part en local.
+  if (!preset.guaardvarkTrainReady && preset.family === 'image') {
     issues.push({
       level: 'tip',
       code: 'GUAARDVARK_BASE_NOT_READY',
@@ -738,6 +813,59 @@ function buildIssues(
       fix: 'Lancez le job en local avec les scripts générés, ou utilisez Z-Image/SDXL si vous voulez passer par guaardvark.',
     });
   }
+  if (settings.lowVram && vramGb >= preset.comfortableVramGb) {
+    issues.push({
+      level: 'tip',
+      code: 'LOW_VRAM_UNNEEDED',
+      message: 'Le layer offloading est actif alors que la VRAM suffit : chaque couche fait un aller-retour CPU/GPU.',
+      fix: 'Décochez « Low VRAM » pour gagner ~25-40 % de vitesse à qualité identique.',
+    });
+  }
+
+  if (preset.id === 'minimax_h3') {
+    if (settings.resolution <= 384) {
+      issues.push({
+        level: 'tip',
+        code: 'H3_LOW_RES',
+        message: '384 px est le réglage de secours pour 12 Go : le visage perd du détail, le LoRA apprend surtout la silhouette.',
+        fix: '512 px est le plancher utile pour une identité ; 768 px si vous avez 24 Go et du temps.',
+      });
+    }
+    if (settings.rank > 16) {
+      issues.push({
+        level: 'tip',
+        code: 'H3_RANK_ABOVE_16',
+        message: 'Pour H3, les guides ai-toolkit partent sur rank 16 / alpha 16 (208 modules entraînés).',
+        fix: 'Ne montez à 32 que si l’identité reste sous-apprise après 1500 steps.',
+      });
+    }
+    if (vramGb < preset.minVramGb) {
+      issues.push({
+        level: 'warning',
+        code: 'H3_BELOW_MIN_VRAM',
+        message: `H3 sous ${preset.minVramGb} Go : même avec low_vram, le text encoder Qwen3-VL (15,7 Go en nvfp4) doit être entièrement déporté.`,
+        fix: 'Attendez-vous à des heures par run, ou entraînez sur une machine 24 Go / louée.',
+      });
+    }
+    if (!settings.lowVram && vramGb < preset.comfortableVramGb) {
+      issues.push({
+        level: 'warning',
+        code: 'H3_LOW_VRAM_REQUIRED',
+        message: `Sous ${preset.comfortableVramGb} Go, H3 a besoin de low_vram / layer offloading : sans lui, ~${formatVram(
+          estimateVramMb(preset, {
+            resolution: settings.resolution,
+            rank: settings.rank,
+            batchSize: settings.batchSize,
+            precision: settings.precision,
+            gradientCheckpointing: settings.gradientCheckpointing,
+            blocksToSwap: settings.blocksToSwap,
+          })
+        )} contre ${formatVram(estimate.vramAvailableMb)} disponibles.`,
+        fix: 'Recochez « Low VRAM » : le YAML généré remet low_vram + layer_offloading.',
+      });
+    }
+  }
+
   if (settings.alpha > settings.rank * 2) {
     issues.push({
       level: 'tip',
@@ -830,12 +958,25 @@ const datasetChecklist = (preset: LoraBaseModelPreset, request: LoraPlanRequest,
       : '3. ComfyUI / A1111 / guaardvark : placez-le dans `models/loras` et appliquez une échelle 0.7–0.9.',
     '4. Si l’identité « déborde » sur les autres sujets, baissez l’échelle avant de relancer un entraînement.',
     '',
+    '## Utilisation dans WanGP (Wan2GP)',
+    '',
+    plan.wangp.folder
+      ? `- Dossier : \`${plan.wangp.pathHint}\` (sous la racine \`loras/\` de WanGP).`
+      : '- WanGP n’héberge pas ce modèle : le LoRA est à charger dans ComfyUI / A1111 / guaardvark (`models/loras`).',
+    plan.wangp.folder
+      ? `- Échelle conseillée : ${plan.wangp.strengthHint}. Un LoRA d’identité trop fort casse la liberté de pose.`
+      : null,
+    plan.wangp.folder ? `- ${plan.wangp.note}` : null,
+    plan.wangp.folder
+      ? '- Sans copie de fichier : Pinokio AI expose le dossier et l’URL à coller dans « Enter Lora URL » (onglet LoRA Studio).'
+      : null,
+    '',
     '## Notes spécifiques au modèle',
     '',
     ...preset.notes.map((n) => `- ${n}`),
     '',
   ];
-  return lines.join('\n');
+  return lines.filter((line) => line !== null).join('\n');
 };
 
 const musubiScript = (preset: LoraBaseModelPreset, request: LoraPlanRequest): string => {
@@ -1000,6 +1141,110 @@ const aiToolkitYaml = (preset: LoraBaseModelPreset, request: LoraPlanRequest): s
   ].join('\n');
 };
 
+const aiToolkitH3Yaml = (preset: LoraBaseModelPreset, request: LoraPlanRequest): string => {
+  const s = request.settings;
+  const sampleEvery = Math.max(250, Math.round(s.steps / 4));
+  return [
+    '---',
+    'job: extension',
+    'config:',
+    `  name: "${request.outputName}"`,
+    '  process:',
+    "    - type: 'sd_trainer'",
+    '      training_folder: "output"',
+    '      device: cuda:0',
+    `      trigger_word: "${request.dataset.triggerWord}"`,
+    '      network:',
+    '        type: "lora"',
+    `        linear: ${s.rank}`,
+    `        linear_alpha: ${s.alpha}`,
+    '        network_kwargs:',
+    '          # Le checkpoint pruned a replié l AdaLN dans adaln_t_table : ces',
+    '          # projections n existent plus, on ne les entraîne donc pas.',
+    '          ignore_if_contains: ["adaln_proj"]',
+    '      save:',
+    '        dtype: float16',
+    `        save_every: ${sampleEvery}`,
+    '        max_step_saves_to_keep: 4',
+    '      datasets:',
+    `        - folder_path: "${request.dataset.path}"`,
+    '          caption_ext: "txt"',
+    '          caption_dropout_rate: 0.05',
+    '          num_frames: 1          # 1 = images fixes (identité) ; 17n+5 pour des clips',
+    '          fps: 24',
+    '          do_i2v: true           # première image = keyframe, comme FL2VA en inférence',
+    '          do_audio: false',
+    '          cache_latents_to_disk: true',
+    `          resolution: [${s.resolution}]`,
+    '      train:',
+    `        batch_size: ${s.batchSize}`,
+    `        steps: ${s.steps}`,
+    `        gradient_accumulation: ${s.gradientAccumulation}`,
+    `        gradient_checkpointing: ${s.gradientCheckpointing}`,
+    '        noise_scheduler: "flowmatch"',
+    '        timestep_type: "shift"   # shift 12 vidéo / 3 audio, gérés par le modèle',
+    '        do_guidance_loss: true',
+    '        guidance_loss_target: 3.5',
+    "        audio_loss_multiplier: 0.0   # LoRA d'image/identité : on ignore l'audio",
+    `        optimizer: "${s.optimizer}"`,
+    `        lr: ${s.learningRate}`,
+    `        dtype: ${s.precision}`,
+    '        cache_text_embeddings: true',
+    '      model:',
+    `        name_or_path: "${preset.repoId}"`,
+    '        arch: "minimax_h3"',
+    '        quantize: true',
+    '        qtype: "convrot8"',
+    '        quantize_te: true',
+    '        qtype_te: "nvfp4"',
+    `        low_vram: ${s.lowVram}`,
+    ...(s.lowVram
+      ? [
+          '        layer_offloading: true',
+          '        layer_offloading_transformer_percent: 0.2',
+          '        layer_offloading_text_encoder_percent: 0.2',
+        ]
+      : []),
+    '        # Adaptateur de training v1 : neutralise la distillation du guidance,',
+    "        # actif UNIQUEMENT pendant l'entraînement (jamais fusionné, inutile en inférence).",
+    '        assistant_lora_path: "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors"',
+    '      sample:',
+    '        sampler: "flowmatch"',
+    `        sample_every: ${sampleEvery}`,
+    `        width: ${s.resolution}`,
+    `        height: ${s.resolution}`,
+    '        num_frames: 1',
+    '        guidance_scale: 1        # H3 est guidance-distilled : ni CFG ni négatif',
+    '        sample_steps: 28',
+    '        prompts:',
+    `          - "${request.dataset.triggerWord} ${request.dataset.classToken}, close-up portrait, natural light"`,
+    `          - "${request.dataset.triggerWord} ${request.dataset.classToken}, medium shot, looking at camera"`,
+    '',
+  ].join('\n');
+};
+
+const aiToolkitH3Run = (request: LoraPlanRequest): string =>
+  [
+    '#!/usr/bin/env bash',
+    '# MiniMax H3 LoRA — ai-toolkit (ostris), arch minimax_h3',
+    "# ai-toolkit exige CUDA : H3 ne s'entraîne pas sur Apple Silicon.",
+    'set -euo pipefail',
+    '',
+    'git clone https://github.com/ostris/ai-toolkit.git',
+    'cd ai-toolkit',
+    'uv venv && uv pip install -r requirements.txt',
+    '',
+    `CONFIG="config/${request.outputName}.yaml"`,
+    'mkdir -p config output',
+    `# copiez ici le YAML généré dans le LoRA Studio :`,
+    `# cp ${request.outputName}.yaml "$CONFIG"`,
+    'python run.py "$CONFIG"',
+    '',
+    `# Sortie : output/${request.outputName}/*.safetensors`,
+    '# -> à déposer dans loras/minimax_h3/ de WanGP (voir install-to-wangp.sh)',
+    '',
+  ].join('\n');
+
 const aiToolkitRun = (request: LoraPlanRequest): string =>
   [
     '#!/usr/bin/env bash',
@@ -1101,6 +1346,29 @@ const guaardvarkDispatch = (binding: LoraGuaardvarkBinding): string =>
     '',
   ].join('\n');
 
+const wangpTarget = (preset: LoraBaseModelPreset, request: LoraPlanRequest): LoraWanGpTarget => {
+  const filename = `${request.outputName}.safetensors`;
+  if (!preset.wangpFolder) {
+    return {
+      filename,
+      pathHint: '—',
+      strengthHint: '—',
+      note:
+        'WanGP ne charge pas les LoRA SDXL : utilisez A1111 / ComfyUI / guaardvark (models/loras), ou entraînez une base que WanGP héberge.',
+    };
+  }
+  const isH3 = preset.id === 'minimax_h3';
+  return {
+    folder: preset.wangpFolder,
+    filename,
+    pathHint: `loras/${preset.wangpFolder}/${filename}`,
+    strengthHint: preset.family === 'video' ? '0,7 → 1,0' : '0,7 → 0,9',
+    note: isH3
+      ? 'Dans WanGP : modèle « MiniMax H3 FL2VA Pruned 20B », 480p, guidance 1 (H3 est guidance-distilled). Avec un LoRA Turbo en plus : 4 à 8 steps ; sans : 20 à 28 steps. Ne mélangez pas ce LoRA d’identité avec un LoRA Turbo au-delà de 1.0 d’échelle cumulée.'
+      : `Déposez le fichier dans loras/${preset.wangpFolder}/, cliquez Refresh dans WanGP, puis activez-le dans Advanced > Loras (échelle ${preset.family === 'video' ? '0,7 à 1,0' : '0,7 à 0,9'}).`,
+  };
+};
+
 const guaardvarkBinding = (preset: LoraBaseModelPreset, request: LoraPlanRequest): LoraGuaardvarkBinding => {
   const s = request.settings;
   const payload = {
@@ -1184,22 +1452,42 @@ function buildArtifacts(
       );
       break;
     case 'ai-toolkit':
-      artifacts.push(
-        {
-          id: 'train-yaml',
-          filename: `${request.outputName}.yaml`,
-          language: 'yaml',
-          purpose: 'Configuration ai-toolkit pour FLUX (LoRA UNet, quantize, adamw8bit).',
-          content: aiToolkitYaml(preset, request),
-        },
-        {
-          id: 'train-sh',
-          filename: 'run.sh',
-          language: 'bash',
-          purpose: 'Commande de lancement ai-toolkit.',
-          content: aiToolkitRun(request),
-        }
-      );
+      if (preset.id === 'minimax_h3') {
+        artifacts.push(
+          {
+            id: 'train-yaml',
+            filename: `${request.outputName}.yaml`,
+            language: 'yaml',
+            purpose:
+              'Configuration ai-toolkit MiniMax H3 (arch minimax_h3, adaptateur de training, adaln_proj exclu).',
+            content: aiToolkitH3Yaml(preset, request),
+          },
+          {
+            id: 'train-sh',
+            filename: 'run.sh',
+            language: 'bash',
+            purpose: 'Installation d’ai-toolkit puis lancement de l’entraînement H3.',
+            content: aiToolkitH3Run(request),
+          }
+        );
+      } else {
+        artifacts.push(
+          {
+            id: 'train-yaml',
+            filename: `${request.outputName}.yaml`,
+            language: 'yaml',
+            purpose: 'Configuration ai-toolkit pour FLUX (LoRA UNet, quantize, adamw8bit).',
+            content: aiToolkitYaml(preset, request),
+          },
+          {
+            id: 'train-sh',
+            filename: 'run.sh',
+            language: 'bash',
+            purpose: 'Commande de lancement ai-toolkit.',
+            content: aiToolkitRun(request),
+          }
+        );
+      }
       break;
     case 'ltx-trainer':
       artifacts.push(
@@ -1246,6 +1534,36 @@ function buildArtifacts(
         }
       );
       break;
+  }
+
+  if (preset.wangpFolder) {
+    const folder = preset.wangpFolder;
+    artifacts.push({
+      id: 'wangp-install',
+      filename: 'install-to-wangp.sh',
+      language: 'bash',
+      purpose: `Copie le .safetensors dans loras/${folder}/ pour que WanGP le propose dans l'onglet Advanced > Loras.`,
+      content: [
+        '#!/usr/bin/env bash',
+        '# Installe le LoRA entraîné dans le dossier que WanGP lit pour ce modèle.',
+        `# WanGP attend : <racine loras>/${folder}/ (par défaut ~/pinokio/app/loras/${folder}/)`,
+        'set -euo pipefail',
+        '',
+        'LORA_FILE="${1:?usage: install-to-wangp.sh /chemin/vers/mon_lora.safetensors}"',
+        'WANGP_LORAS="${WANGP_LORAS:-$HOME/pinokio/app/loras}"',
+        `DEST="$WANGP_LORAS/${folder}"`,
+        '',
+        'mkdir -p "$DEST"',
+        `cp "$LORA_FILE" "$DEST/${request.outputName}.safetensors"`,
+        `echo "Installé : $DEST/${request.outputName}.safetensors"`,
+        '',
+        '# Dans WanGP : bouton Refresh (en haut), puis Advanced > Loras.',
+        '# Alternative sans copie : collez l’URL du LoRA dans « Enter Lora URL ».',
+        '#   Pinokio AI sert les fichiers présents dans ce dossier :',
+        `#   http://127.0.0.1:3000/api/lora/wangp/${folder}/${request.outputName}.safetensors`,
+        '',
+      ].join('\n'),
+    });
   }
 
   artifacts.push(
@@ -1299,6 +1617,7 @@ export function buildLoraPlan(input: LoraPlanRequest | any): LoraPlan {
     precision: request.settings.precision,
     gradientCheckpointing: request.settings.gradientCheckpointing,
     blocksToSwap: request.settings.blocksToSwap,
+    lowVram: request.settings.lowVram,
   });
   const vramAvailableMb = VRAM_GB[request.hardware] * 1024;
   const vramFit: LoraPlanEstimate['vramFit'] =
@@ -1341,6 +1660,7 @@ export function buildLoraPlan(input: LoraPlanRequest | any): LoraPlan {
     issues: [],
     artifacts: [],
     guaardvark: guaardvarkBinding(preset, request),
+    wangp: wangpTarget(preset, request),
     createdAt: new Date().toISOString(),
   };
 

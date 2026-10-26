@@ -15,6 +15,7 @@ plugin `lora_trainer` (Cast Studio).
 
    | Base | Framework généré | VRAM conseillée | Notes |
    |------|------------------|-----------------|-------|
+   | MiniMax H3 FL2VA Pruned 20B | ai-toolkit (`arch: minimax_h3`) | 12 Go (low VRAM) → 24 Go | Vidéo, 512 px, LoRA utilisable dans WanGP |
    | Wan 2.1 / 2.2 14B | musubi-tuner | 12 Go min (avec `blocks_to_swap`) | Vidéo, 480p |
    | Wan 2.1 1.3B | musubi-tuner | 8 Go | Point d'entrée vidéo |
    | FLUX.1 dev | ai-toolkit | 12 Go (quantize) → 24 Go | Image, 1024 px |
@@ -31,6 +32,7 @@ plugin `lora_trainer` (Cast Studio).
    - `VRAM_WILL_OOM` (erreur bloquante) : la configuration ne tient pas ;
    - `MPS_UNSUPPORTED` : musubi-tuner / ltx-trainer exigent CUDA ;
    - `GUAARDVARK_TRAIN_TIMEOUT` : guaardvark tue les runs au-delà de 30 min (CUDA) / 3 h (MPS) ;
+   - `H3_LOW_RES`, `H3_RANK_ABOVE_16`, `H3_BELOW_MIN_VRAM`, `LOW_VRAM_UNNEEDED` (spécifiques H3) ;
    - `DATASET_TOO_SMALL`, `LR_TOO_HIGH`, `FLUX_LOW_RES`, `STEPS_BELOW_RECOMMENDED`, etc.
 5. **Fichiers générés** (copiables/téléchargeables depuis l'onglet) :
    - `dataset-checklist.md` — format des `.txt`, contrôles qualité, exemples de légendes ;
@@ -39,6 +41,53 @@ plugin `lora_trainer` (Cast Studio).
    - `lora-plan.json` — le plan complet, archivable ;
    - `dispatch-guaardvark.sh` — l'appel `curl` équivalent au bouton d'envoi.
 6. **Envoi à guaardvark** (optionnel) — sonde de connexion puis dispatch du job.
+
+## Livraison WanGP (Wan2GP)
+
+Un LoRA ne sert à rien s'il n'arrive pas dans l'interface de génération. Le studio sait où
+WanGP attend chaque famille de modèles :
+
+| Base | Dossier WanGP |
+|------|----------------|
+| MiniMax H3 | `loras/minimax_h3/` |
+| Wan 14B (i2v) | `loras/wan_i2v/` |
+| Wan 1.3B | `loras/wan_1.3B/` |
+| FLUX.1 | `loras/flux/` |
+| Z-Image | `loras/z_image/` |
+| LTX-Video | `loras/ltxv/` |
+| SDXL | — (WanGP n'héberge pas SDXL) |
+
+Deux façons de livrer le fichier, toutes deux présentées dans le panneau **Livraison WanGP** :
+
+1. **Copie** — l'artefact `install-to-wangp.sh` place le `.safetensors` dans le bon
+   sous-dossier (`WANGP_LORAS` pour changer de racine), puis *Refresh* dans WanGP.
+2. **Sans copie** — le serveur liste le dossier et sert chaque `.safetensors` en HTTP ;
+   l'URL affichée se colle dans le champ **« Enter Lora URL »** de WanGP, qui la télécharge.
+
+La racine est configurable : `WANGP_LORAS_ROOT` (défaut `~/pinokio/app/loras`). Seuls les
+sous-dossiers connus de WanGP et les `.safetensors` sont exposés, avec un garde-fou contre
+les traversées de chemin.
+
+Routes ajoutées :
+
+| Route | Rôle |
+|-------|------|
+| `GET /api/lora/wangp` | Racine + sous-dossiers présents et nombre de LoRA |
+| `GET /api/lora/wangp/:folder` | Fichiers `.safetensors` du dossier, avec URL prête à coller |
+| `GET /api/lora/wangp/:folder/:name` | Téléchargement du `.safetensors` (streaming) |
+
+### Spécificités MiniMax H3
+
+- Entraînement via **ai-toolkit** (`arch: minimax_h3`), sur le checkpoint pruned int8
+  ConvRot (`Comfy-Org/MiniMax-H3`) + text encoder Qwen3-VL-32B en nvfp4.
+- `network_kwargs.ignore_if_contains: ["adaln_proj"]` : les projections AdaLN n'existent
+  plus sur le build pruned, les entraîner produirait des clés inutilisables.
+- L'**adaptateur de training** `ostris/minimax_h3_training_adapter_v1` doit être chargé
+  pendant l'entraînement (il neutralise la distillation du guidance) et n'est jamais
+  fusionné ni nécessaire en inférence.
+- `low_vram` + `layer_offloading` dès qu'on descend sous 24 Go (un run 12 Go tient en 512 px).
+- H3 est **guidance-distilled** : `guidance_scale: 1`, pas de CFG ni de prompt négatif.
+  WanGP relit indifféremment les LoRA rank 8 / 16 / 64 (traduction `lora_affine`).
 
 ## Pont guaardvark
 
@@ -71,6 +120,7 @@ GUAARDVARK_URL="http://127.0.0.1:5000"   # Flask de guaardvark (:5055 sur macOS)
 GUAARDVARK_API_KEY=""                    # seulement si guaardvark l'exige
 GUAARDVARK_TIMEOUT_MS=8000
 GUAARDVARK_ALLOW_REMOTE=""              # "" = localhost/LAN seulement (anti-SSRF)
+WANGP_LORAS_ROOT="$HOME/pinokio/app/loras"   # racine loras/ de WanGP
 ```
 
 Sans guaardvark, tout le reste fonctionne : le studio est un générateur de plan et de

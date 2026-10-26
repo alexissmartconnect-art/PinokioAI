@@ -2,6 +2,8 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { buildLoraPlan, normalizeLoraRequest } from './src/services/lora/loraPlanBuilder';
 
@@ -1577,6 +1579,116 @@ app.post('/api/lora/train/cancel', async (req, res) => {
   } catch (error: any) {
     return res.status(502).json({ error: 'GUAARDVARK_UNREACHABLE', message: describeNetworkError(error) });
   }
+});
+
+// ============================================================================
+// LORA DELIVERY — dossier `loras/` de WanGP (Wan2GP)
+// ============================================================================
+// WanGP lit ses LoRA dans `loras/<famille>/` (loras/minimax_h3, loras/wan_i2v,
+// loras/z_image...). Ce bloc liste ce dossier et sert les .safetensors en HTTP :
+// l'URL produite se colle directement dans le champ « Enter Lora URL » de WanGP,
+// ce qui évite tout copier-coller de fichier.
+const WANGP_LORAS_ROOT = path.resolve(
+  (process.env.WANGP_LORAS_ROOT || path.join(os.homedir(), 'pinokio', 'app', 'loras')).replace(/^~/, os.homedir())
+);
+
+/** Sous-dossiers connus de WanGP : on n'expose rien d'autre. */
+const WANGP_LORA_FOLDERS = new Set([
+  'minimax_h3',
+  'wan',
+  'wan_i2v',
+  'wan_1.3B',
+  'wan_5B',
+  'flux',
+  'flux2',
+  'qwen',
+  'z_image',
+  'ltxv',
+  'ltx2',
+  'hunyuan',
+  'hunyuan_1_5',
+]);
+
+const SAFETENSORS_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.safetensors$/;
+
+function resolveWangpFolder(folder: string): { dir: string; key: string } | null {
+  if (!WANGP_LORA_FOLDERS.has(folder)) return null;
+  const dir = path.resolve(WANGP_LORAS_ROOT, folder);
+  // Défense en profondeur : le dossier résolu doit rester sous la racine.
+  if (dir !== path.join(WANGP_LORAS_ROOT, folder)) return null;
+  return { dir, key: folder };
+}
+
+function listWangpLoras(folder: string) {
+  const target = resolveWangpFolder(folder);
+  if (!target) return null;
+  const exists = fs.existsSync(target.dir);
+  let files: any[] = [];
+  if (exists) {
+    files = fs
+      .readdirSync(target.dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && SAFETENSORS_NAME.test(entry.name))
+      .map((entry) => {
+        const stat = fs.statSync(path.join(target.dir, entry.name));
+        return {
+          name: entry.name,
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          url: `/api/lora/wangp/${folder}/${encodeURIComponent(entry.name)}`,
+        };
+      })
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  }
+  return { root: WANGP_LORAS_ROOT, folder, path: target.dir, exists, files };
+}
+
+// Endpoint: état du dossier LoRA d'une famille de modèles WanGP
+app.get('/api/lora/wangp/:folder', (req, res) => {
+  const info = listWangpLoras(req.params.folder);
+  if (!info) {
+    return res.status(404).json({
+      error: 'UNKNOWN_WANGP_FOLDER',
+      message: `Dossier WanGP inconnu : ${req.params.folder}`,
+      knownFolders: [...WANGP_LORA_FOLDERS],
+    });
+  }
+  return res.json(info);
+});
+
+// Endpoint: liste des dossiers existants sous la racine loras/
+app.get('/api/lora/wangp', (req, res) => {
+  const rootExists = fs.existsSync(WANGP_LORAS_ROOT);
+  const folders = rootExists
+    ? fs
+        .readdirSync(WANGP_LORAS_ROOT, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && WANGP_LORA_FOLDERS.has(entry.name))
+        .map((entry) => {
+          const dir = path.join(WANGP_LORAS_ROOT, entry.name);
+          const count = fs
+            .readdirSync(dir)
+            .filter((name) => SAFETENSORS_NAME.test(name)).length;
+          return { key: entry.name, path: dir, count };
+        })
+    : [];
+  return res.json({ root: WANGP_LORAS_ROOT, exists: rootExists, folders });
+});
+
+// Endpoint: téléchargement d'un .safetensors (URL à coller dans WanGP)
+app.get('/api/lora/wangp/:folder/:name', (req, res) => {
+  const info = listWangpLoras(req.params.folder);
+  if (!info) return res.status(404).json({ error: 'UNKNOWN_WANGP_FOLDER' });
+  const name = req.params.name;
+  if (!SAFETENSORS_NAME.test(name)) {
+    return res.status(400).json({ error: 'BAD_LORA_NAME', message: 'Seuls les .safetensors de ce dossier sont servis.' });
+  }
+  const filePath = path.join(info.path, name);
+  if (path.dirname(path.resolve(filePath)) !== path.resolve(info.path) || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'LORA_NOT_FOUND', message: `${name} est absent de ${info.path}.` });
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  return fs.createReadStream(filePath).pipe(res);
 });
 
 // Mount Vite in development or static files in production

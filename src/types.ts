@@ -349,3 +349,137 @@ export interface VisualInspectorElement {
   }[];
 }
 
+
+// ============================================================================
+// LORA TRAINING STUDIO — TYPES
+// ============================================================================
+
+export type LoraBaseModelId =
+  | 'wan2.1_14b'     // Wan 2.1 / 2.2 14B (vidéo, musubi-tuner)
+  | 'wan2.1_1.3b'    // Wan 2.1 1.3B (vidéo, GPU pauvres)
+  | 'flux1_dev'      // FLUX.1 dev (image, ai-toolkit)
+  | 'sdxl'           // SDXL base 1.0 (image, kohya-ss)
+  | 'zimage_turbo'   // Z-Image Turbo (image, guaardvark / peft)
+  | 'ltx_video';     // LTX-Video 0.9.x (vidéo, ltx-trainer)
+
+export type LoraTrainFramework =
+  | 'musubi'
+  | 'kohya'
+  | 'ai-toolkit'
+  | 'ltx-trainer'
+  | 'guaardvark';
+
+export type LoraPrecision = 'bf16' | 'fp16' | 'fp32';
+export type LoraOptimizer = 'adamw8bit' | 'adamw' | 'adafactor' | 'prodigy';
+export type LoraCaptionStyle = 'trigger_class' | 'trigger_only' | 'natural_language';
+export type LoraDatasetSource = 'photos' | 'renders' | 'mixed' | 'video_frames';
+
+export interface LoraTrainingSettings {
+  resolution: number;
+  rank: number;
+  alpha: number;
+  learningRate: number;
+  steps: number;
+  batchSize: number;
+  gradientAccumulation: number;
+  precision: LoraPrecision;
+  optimizer: LoraOptimizer;
+  gradientCheckpointing: boolean;
+  cacheLatents: boolean;
+  blocksToSwap: number;
+  seed: number;
+}
+
+export interface LoraDatasetConfig {
+  path: string;
+  imageCount: number;
+  triggerWord: string;
+  classToken: string;
+  captionStyle: LoraCaptionStyle;
+  source: LoraDatasetSource;
+  regularisationImages: number;
+}
+
+export interface LoraPlanRequest {
+  baseModel: LoraBaseModelId;
+  hardware: HardwareVram;
+  outputName: string;
+  subjectId?: number;
+  settings: LoraTrainingSettings;
+  dataset: LoraDatasetConfig;
+}
+
+export type LoraIssueLevel = 'error' | 'warning' | 'tip';
+
+export interface LoraPlanIssue {
+  level: LoraIssueLevel;
+  code: string;
+  message: string;
+  /** Suggestion la plus utile à appliquer, quand il y en a une. */
+  fix?: string;
+}
+
+export interface LoraPlanEstimate {
+  vramMb: number;
+  vramAvailableMb: number;
+  vramFit: 'fits' | 'tight' | 'exceeds';
+  minutes: number;
+  totalSteps: number;
+  optimizerSteps: number;
+  epochs: number;
+  datasetMb: number;
+  loraMb: number;
+}
+
+export interface LoraArtifact {
+  id: string;
+  filename: string;
+  language: 'bash' | 'json' | 'toml' | 'yaml' | 'markdown' | 'python';
+  purpose: string;
+  content: string;
+}
+
+export interface LoraGuaardvarkBinding {
+  baseModelId: 'zimage-turbo' | 'flux-dev' | 'sdxl-legacy';
+  trainReady: boolean;
+  note: string;
+  payload: Record<string, unknown>;
+  curl: string;
+}
+
+export interface LoraPlan {
+  baseModel: LoraBaseModelId;
+  baseModelLabel: string;
+  framework: LoraTrainFramework;
+  frameworkLabel: string;
+  hardware: HardwareVram;
+  outputName: string;
+  subjectId?: number;
+  settings: LoraTrainingSettings;
+  recommended: LoraTrainingSettings;
+  dataset: LoraDatasetConfig;
+  estimate: LoraPlanEstimate;
+  issues: LoraPlanIssue[];
+  artifacts: LoraArtifact[];
+  guaardvark: LoraGuaardvarkBinding;
+  createdAt: string;
+}
+
+export interface LoraGuaardvarkHealth {
+  reachable: boolean;
+  baseUrl: string;
+  version?: string;
+  hardware?: Record<string, unknown>;
+  trainingLibraries?: Record<string, unknown>;
+  error?: string;
+  checkedAt: string;
+}
+
+export interface LoraRemoteJob {
+  subjectId: number;
+  status: string;
+  error?: string | null;
+  baseModelId?: string;
+  loraPath?: string | null;
+  raw?: Record<string, unknown>;
+}

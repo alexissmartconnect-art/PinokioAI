@@ -10,6 +10,7 @@ import { ErrorLogManager } from './components/ErrorLogManager';
 import { KaiCinematicStudio } from './components/KaiCinematicStudio';
 import { AiChatCopilot } from './components/AiChatCopilot';
 import { ApiSettingsModal } from './components/ApiSettingsModal';
+import { LoraTrainingStudio } from './components/LoraTrainingStudio';
 import { HardwareVram, Wan2GPSettings, PinokioApp, AIProviderModel, SystemErrorLog } from './types';
 import { VRAM_PRESET_CONFIGS } from './data/pinokioDatabase';
 
@@ -65,7 +66,7 @@ const DEFAULT_AI_MODELS: AIProviderModel[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic'>('cinematic');
+  const [activeTab, setActiveTab] = useState<'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic' | 'lora'>('cinematic');
   const [selectedVram, setSelectedVram] = useState<HardwareVram>('8GB');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isApiSettingsOpen, setIsApiSettingsOpen] = useState(false);
@@ -220,6 +221,10 @@ export default function App() {
 
         {activeTab === 'cinematic' && (
           <KaiCinematicStudio />
+        )}
+
+        {activeTab === 'lora' && (
+          <LoraTrainingStudio selectedVram={selectedVram} />
         )}
 
         {activeTab === 'scripts' && (

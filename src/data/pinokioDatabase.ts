@@ -223,6 +223,69 @@ export const PINOKIO_APPS: PinokioApp[] = [
     launchCommand: 'pinokio run plugin',
     argsFlag: '',
     troubleshootingTips: ['Use Claude Code Auto or OpenCode to customize your local Gradio interfaces.']
+  },
+  {
+    id: 'guaardvark',
+    name: 'Guaardvark',
+    author: 'guaardvark',
+    version: 'v3.3.0',
+    description:
+      'Self-hosted AI studio on your own GPU: chat with your files (RAG), screen and browser agents, coding swarms, LoRA training, an MCP server for Claude Code and Cursor, plus local video, image, music and voice generation. No telemetry.',
+    tags: ['#studio', '#lora-training', '#self-hosted', '#rag', '#agents', '#mcp', '#local', '#z-image', '#sdxl'],
+    category: 'utility',
+    repoUrl: 'https://github.com/guaardvark/guaardvark',
+    minVram: '12GB VRAM (LoRA Z-Image/SDXL)',
+    recommendedGpu: 'NVIDIA RTX 3090/4090 24GB (ou 16GB avec gradient checkpointing)',
+    featured: true,
+    supportedModels: [
+      'Z-Image Turbo (LoRA par défaut)',
+      'SDXL 1.0 (back-end legacy PEFT)',
+      'FLUX.1 dev (recette en cours)',
+      'Qwen2.5 / Gemma (fine-tune texte)',
+      'Wan, LTX, ACE-Step (génération)',
+    ],
+    keyMenus: [
+      {
+        menuName: 'Cast Studio > LoRA Training',
+        description:
+          'Le plugin lora_trainer entraîne un LoRA d’identité (personnage, décor, objet) depuis les images de référence du sujet.',
+        criticalSettings: [
+          'base_model_id (zimage-turbo par défaut, sdxl-legacy en secours)',
+          'resolution 512 (sûr pour 16 Go) · rank 16 · alpha 16 · lr 1e-4',
+          'steps = min(1500, max(400, nb_images × 100))',
+          'Training libraries installées (Settings > Training libraries)',
+        ],
+      },
+      {
+        menuName: 'plugins/lora_trainer > Backends',
+        description:
+          'Sélection real/auto/mock : mock est réservé aux tests (NO-MOCKS policy), auto exige un accélérateur CUDA ou MPS.',
+        criticalSettings: [
+          'GUAARDVARK_LORA_BACKEND=auto | real | mock',
+          'scripts/setup_venv.sh (venv-torch ~7 Go pour SDXL)',
+          'ZIMAGE_TURBO_TRAIN_ADAPTER (adaptateur turbo optionnel)',
+          'Timeouts : 15 min de chargement / 30 min de train sur CUDA',
+        ],
+      },
+      {
+        menuName: 'Settings > Training libraries',
+        description:
+          'Bibliothèques épinglées, modèles de base téléchargeables et verdict matériel. Aucun job ne démarre sans elles.',
+        criticalSettings: [
+          'Install / Remove (token à usage unique)',
+          'Download du modèle de base (jamais pendant un job)',
+          'Verdict GPU vs budget VRAM déclaré par le modèle',
+        ],
+      },
+    ],
+    launchCommand: './start.sh',
+    argsFlag: 'FLASK_PORT=5000 VITE_PORT=5173',
+    troubleshootingTips: [
+      'Le backend Flask écoute sur :5000 (:5055 sur macOS) : c’est l’URL à donner au LoRA Studio de Pinokio AI.',
+      'Une erreur 400 BASE_MODEL_UNAVAILABLE signifie que le registre média ne déclare pas la base « train ready » : restez sur zimage-turbo ou sdxl-legacy.',
+      'Si GUAARDVARK_API_KEY est défini, chaque appel doit porter l’en-tête X-API-Key (Pinokio AI le fait via GUAARDVARK_API_KEY).',
+      'Un job bloqué à « training » sans progression : vérifiez nvidia-smi puis relancez avec GUAARDVARK_LORA_BACKEND=real pour court-circuiter la sonde.',
+    ],
   }
 ];
 

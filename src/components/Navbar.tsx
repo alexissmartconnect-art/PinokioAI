@@ -10,14 +10,15 @@ import {
   Film,
   Settings,
   Bug,
+  BrainCircuit,
   ExternalLink,
   ChevronRight
 } from 'lucide-react';
 import { HardwareVram } from '../types';
 
 interface NavbarProps {
-  activeTab: 'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic';
-  setActiveTab: (tab: 'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic') => void;
+  activeTab: 'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic' | 'lora';
+  setActiveTab: (tab: 'vision' | 'configurator' | 'ltx_director' | 'apps' | 'doctor' | 'scripts' | 'logs' | 'cinematic' | 'lora') => void;
   selectedVram: HardwareVram;
   setSelectedVram: (vram: HardwareVram) => void;
   toggleChat: () => void;
@@ -40,7 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center justify-between h-16">
           
           {/* Logo & Brand */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 text-slate-950 shadow-lg shadow-amber-500/20 font-black text-xl">
               <span className="transform -rotate-12 select-none">P</span>
             </div>
@@ -56,7 +57,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Navigation Links */}
-          <nav className="hidden md:flex items-center space-x-1 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60">
+          <nav className="hidden md:flex items-center space-x-1 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60 min-w-0 overflow-x-auto">
             <button
               onClick={() => setActiveTab('cinematic')}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
@@ -131,6 +132,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('lora')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                activeTab === 'lora'
+                  ? 'bg-gradient-to-r from-purple-500 to-amber-500 text-slate-950 font-bold shadow-md shadow-purple-500/25'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
+              }`}
+            >
+              <BrainCircuit className="w-3.5 h-3.5 text-purple-300" />
+              LoRA Studio
+            </button>
+
+            <button
               onClick={() => setActiveTab('scripts')}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 activeTab === 'scripts'
@@ -156,7 +169,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
 
           {/* Right Controls: VRAM profile & AI Chat Assistant */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             {/* GPU Hardware Selector */}
             <div className="flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
               <Cpu className="w-3.5 h-3.5 text-amber-400" />
@@ -246,6 +259,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             Disk Saver
+          </button>
+          <button
+            onClick={() => setActiveTab('lora')}
+            className={`px-3 py-1 rounded-md text-xs whitespace-nowrap ${
+              activeTab === 'lora' ? 'bg-amber-500 text-slate-950 font-bold' : 'text-slate-300'
+            }`}
+          >
+            LoRA
           </button>
           <button
             onClick={() => setActiveTab('scripts')}

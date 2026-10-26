@@ -98,8 +98,11 @@ jobs:
           $env:PORT = '3917'
           $env:APP_VERSION = 'ci'
           # Pas de -WindowStyle ici : incompatible avec -RedirectStandardOutput.
+          # Le chemin contient des espaces (« Pinokio AI Studio ») : sans guillemets,
+          # Start-Process découpe l'argument et node reçoit un chemin tronqué.
+          $serverScript = '"' + (Join-Path $app 'app\server.cjs') + '"'
           $proc = Start-Process -FilePath (Get-Command node).Source `
-            -ArgumentList (Join-Path $app 'app\server.cjs') `
+            -ArgumentList $serverScript `
             -WorkingDirectory $app -PassThru `
             -RedirectStandardOutput (Join-Path $env:TEMP 'srv.out.log') `
             -RedirectStandardError (Join-Path $env:TEMP 'srv.err.log')

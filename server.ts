@@ -1,13 +1,25 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { buildLoraPlan, normalizeLoraRequest } from './src/services/lora/loraPlanBuilder';
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Port configurable : l'app Windows embarquée peut être lancée sur un autre port
+// si 3000 est déjà pris sur la machine.
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+// `__dirname` n'existe qu'en CommonJS : le bundle de production est en CJS,
+// mais `npm run dev` (tsx) charge ce fichier en ESM. On retombe alors sur le
+// répertoire courant (la racine du dépôt).
+const APP_ROOT =
+  typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+const DIST_DIR = process.env.PINOKIO_DIST || path.resolve(APP_ROOT, 'dist');
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '30mb' }));
@@ -187,6 +199,10 @@ function logSystemError(entry: Omit<ServerErrorLog, 'id' | 'timestamp'>) {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    app: 'pinokio-ai-studio',
+    version: process.env.APP_VERSION || 'dev',
+    production: IS_PRODUCTION,
+    port: PORT,
     hasApiKey: Boolean(apiKey),
     providers: {
       gemini: { available: Boolean(apiKey), label: 'Gemini (Google GenAI)', configured: Boolean(apiKey) },
@@ -1287,23 +1303,446 @@ app.post('/api/kai/evaluate-strategy', (req, res) => {
   });
 });
 
+// ============================================================================
+// LORA TRAINING — plan builder + pont guaardvark (plugin lora_trainer)
+// ============================================================================
+// guaardvark est optionnel : sans instance joignable, /api/lora/plan et les
+// artifacts générés côté client suffisent. Le pont relaie vers son Cast Studio
+// (POST /api/cast/subjects/<id>/train), qui dispatche la tâche Celery
+// lora_trainer sur les backends Z-Image Turbo ou SDXL legacy.
+const GUAARDVARK_URL = (process.env.GUAARDVARK_URL || 'http://127.0.0.1:5000').replace(/\/+$/, '');
+const GUAARDVARK_API_KEY = process.env.GUAARDVARK_API_KEY || '';
+const GUAARDVARK_TIMEOUT_MS = Number(process.env.GUAARDVARK_TIMEOUT_MS || 8000);
+
+const GUAARDVARK_ALLOW_REMOTE = /^(1|true|yes)$/i.test(process.env.GUAARDVARK_ALLOW_REMOTE || '');
+
+/** Boucle locale, LAN et noms .local : les seules cibles acceptées sans opt-in. */
+function isLocalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (['localhost', '::1', '0.0.0.0'].includes(host) || host.endsWith('.local')) return true;
+  if (/^127\./.test(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  const match = host.match(/^172\.(\d+)\./);
+  if (match && Number(match[1]) >= 16 && Number(match[1]) <= 31) return true;
+  return false;
+}
+
+function normalizeGuaardvarkUrl(raw: unknown): string {
+  const candidate = typeof raw === 'string' && raw.trim() ? raw.trim() : GUAARDVARK_URL;
+  const parsed = (() => {
+    try {
+      return new URL(candidate);
+    } catch {
+      return null;
+    }
+  })();
+  if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`URL guaardvark invalide : ${candidate}`);
+  }
+  // Ce pont est un proxy : sans garde-fou, il relaierait n'importe quelle URL
+  // fournie par le client (SSRF). On reste sur la machine ou le LAN, sauf
+  // opt-in explicite pour une instance distante.
+  if (!GUAARDVARK_ALLOW_REMOTE && !isLocalHost(parsed.hostname)) {
+    throw new Error(
+      `Hôte distant refusé (${parsed.hostname}) : Pinokio AI ne relaie que vers la machine locale ou le LAN. Définissez GUAARDVARK_ALLOW_REMOTE=true pour autoriser une instance distante.`
+    );
+  }
+  return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+}
+
+function guaardvarkHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (GUAARDVARK_API_KEY) {
+    headers['X-API-Key'] = GUAARDVARK_API_KEY;
+    headers['Authorization'] = `Bearer ${GUAARDVARK_API_KEY}`;
+  }
+  return headers;
+}
+
+async function guaardvarkCall(
+  baseUrl: string,
+  route: string,
+  init: RequestInit = {},
+  timeoutMs = GUAARDVARK_TIMEOUT_MS
+) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    ...init,
+    headers: { ...guaardvarkHeaders(), ...((init.headers as Record<string, string>) || {}) },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text.slice(0, 600) };
+  }
+  return { response, data };
+}
+
+/** Traduit une erreur réseau Node en une phrase utilisable dans l'UI. */
+function describeNetworkError(error: any): string {
+  const code = error?.cause?.code || error?.code;
+  if (error?.name === 'TimeoutError' || code === 'UND_ERR_CONNECT_TIMEOUT') return 'délai dépassé';
+  if (code === 'ECONNREFUSED') return 'connexion refusée (aucune instance n’écoute sur ce port)';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'hôte introuvable (nom DNS)';
+  if (code === 'ECONNRESET') return 'connexion réinitialisée';
+  return error?.message || 'erreur réseau';
+}
+
+// Endpoint: LoRA bridge configuration (URL par défaut, clé présente ou non)
+app.get('/api/lora/config', (req, res) => {
+  res.json({
+    baseUrl: GUAARDVARK_URL,
+    hasApiKey: Boolean(GUAARDVARK_API_KEY),
+    timeoutMs: GUAARDVARK_TIMEOUT_MS,
+    backendPortHint: 'Flask :5000 par défaut (:5055 sur macOS)',
+    docsUrl: 'https://github.com/guaardvark/guaardvark/tree/main/plugins/lora_trainer',
+  });
+});
+
+// Endpoint: plan LoRA normalisé (même moteur que l'UI, utilisable en curl/MCP)
+app.post('/api/lora/plan', (req, res) => {
+  try {
+    const plan = buildLoraPlan(req.body || {});
+    return res.json({ plan });
+  } catch (error: any) {
+    logSystemError({
+      source: 'server',
+      level: 'error',
+      title: 'Erreur plan LoRA (/api/lora/plan)',
+      message: error?.message || 'Plan LoRA impossible.',
+      stack: error?.stack,
+      context: { endpoint: '/api/lora/plan' },
+    });
+    return res.status(400).json({ error: error?.message || 'Plan LoRA impossible.' });
+  }
+});
+
+// Endpoint: sonde guaardvark (health + hardware + bibliothèques d'entraînement)
+app.post('/api/lora/health', async (req, res) => {
+  let baseUrl = GUAARDVARK_URL;
+  try {
+    baseUrl = normalizeGuaardvarkUrl(req.body?.baseUrl);
+  } catch (error: any) {
+    return res.status(400).json({
+      reachable: false,
+      baseUrl: String(req.body?.baseUrl || ''),
+      error: error.message,
+      checkedAt: new Date().toISOString(),
+    } as any);
+  }
+
+  const [health, hardware, libraries] = await Promise.allSettled([
+    guaardvarkCall(baseUrl, '/api/health'),
+    guaardvarkCall(baseUrl, '/api/training/hardware'),
+    guaardvarkCall(baseUrl, '/api/training/libraries'),
+  ]);
+
+  const healthOk = health.status === 'fulfilled' && health.value.response.ok;
+  const payload = {
+    reachable: healthOk,
+    baseUrl,
+    version:
+      healthOk && health.value.data
+        ? health.value.data.version || health.value.data.data?.version
+        : undefined,
+    hardware:
+      hardware.status === 'fulfilled' && hardware.value.response.ok
+        ? hardware.value.data?.data || hardware.value.data
+        : undefined,
+    trainingLibraries:
+      libraries.status === 'fulfilled' && libraries.value.response.ok
+        ? libraries.value.data?.data || libraries.value.data
+        : undefined,
+    error: healthOk
+      ? undefined
+      : health.status === 'rejected'
+      ? `${describeNetworkError(health.reason)} — ${baseUrl}`
+      : `HTTP ${health.value.response.status} sur /api/health`,
+    checkedAt: new Date().toISOString(),
+  };
+
+  return res.json(payload);
+});
+
+// Endpoint: envoi du job LoRA au Cast Studio de guaardvark
+app.post('/api/lora/train', async (req, res) => {
+  try {
+    const plan = buildLoraPlan(req.body || {});
+    const subjectId = normalizeLoraRequest(req.body).subjectId;
+    if (!subjectId) {
+      return res.status(400).json({
+        error: 'SUBJECT_REQUIRED',
+        message: 'Un id de sujet guaardvark est requis : créez le personnage dans son Cast Studio puis indiquez son id.',
+      });
+    }
+
+    const baseUrl = normalizeGuaardvarkUrl(req.body?.baseUrl);
+
+    // guaardvark n'accepte un job que si son registre média déclare la base
+    // « train ready » ; on le dit ici plutôt que de laisser un 400 opaque.
+    if (!plan.guaardvark.trainReady) {
+      return res.status(409).json({
+        error: 'BASE_MODEL_NOT_TRAIN_READY',
+        message: plan.guaardvark.note,
+        suggestedBaseModel: 'zimage_turbo',
+      });
+    }
+
+    const trainingSettings = {
+      base_model_id: plan.guaardvark.baseModelId,
+      resolution: plan.settings.resolution,
+      rank: plan.settings.rank,
+      alpha: plan.settings.alpha,
+      learning_rate: plan.settings.learningRate,
+      steps: plan.settings.steps,
+    };
+
+    const { response, data } = await guaardvarkCall(baseUrl, `/api/cast/subjects/${subjectId}/train`, {
+      method: 'POST',
+      body: JSON.stringify({ training_settings: trainingSettings }),
+    });
+
+    if (!response.ok) {
+      logSystemError({
+        source: 'server',
+        level: 'warning',
+        title: 'guaardvark a refusé le job LoRA',
+        message: JSON.stringify(data).slice(0, 500),
+        context: { endpoint: '/api/lora/train', statusCode: response.status, targetApp: 'guaardvark' },
+      });
+      return res.status(response.status === 404 ? 404 : 502).json({
+        error: data?.error || `HTTP ${response.status}`,
+        message:
+          data?.message ||
+          (response.status === 404
+            ? `Sujet #${subjectId} introuvable dans guaardvark.`
+            : 'guaardvark a refusé le job : vérifiez ses Training libraries et le backend du modèle de base.'),
+        remote: data,
+      });
+    }
+
+    return res.status(202).json({
+      ok: true,
+      subjectId,
+      status: data?.status || 'training',
+      baseModelId: data?.base_model_id || plan.guaardvark.baseModelId,
+      trainingSettings,
+      remote: data,
+    });
+  } catch (error: any) {
+    logSystemError({
+      source: 'server',
+      level: 'error',
+      title: 'Erreur dispatch LoRA (/api/lora/train)',
+      message: error?.message || 'Envoi du job LoRA impossible.',
+      stack: error?.stack,
+      context: { endpoint: '/api/lora/train', targetApp: 'guaardvark' },
+    });
+    return res.status(502).json({
+      error: 'GUAARDVARK_UNREACHABLE',
+      message: `Impossible de joindre guaardvark (${GUAARDVARK_URL}) : ${describeNetworkError(error)}.`,
+    });
+  }
+});
+
+// Endpoint: état d'entraînement d'un sujet guaardvark
+app.get('/api/lora/subjects/:id', async (req, res) => {
+  try {
+    const subjectId = Number(req.params.id);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'BAD_SUBJECT_ID' });
+    }
+    const baseUrl = normalizeGuaardvarkUrl(req.query.baseUrl);
+    const { response, data } = await guaardvarkCall(baseUrl, `/api/cast/subjects/${subjectId}`);
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data?.error || `HTTP ${response.status}` });
+    }
+    const subject = data?.data || data || {};
+    return res.json({
+      subjectId,
+      status: subject.training_status || 'unknown',
+      error: subject.training_error || null,
+      baseModelId: subject.base_model_id,
+      loraPath: subject.lora_path || null,
+      retrainReady: subject.train_ready,
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      error: 'GUAARDVARK_UNREACHABLE',
+      message: `guaardvark injoignable : ${describeNetworkError(error)}.`,
+    });
+  }
+});
+
+// Endpoint: annulation d'un entraînement LoRA guaardvark
+app.post('/api/lora/train/cancel', async (req, res) => {
+  try {
+    const subjectId = Number(req.body?.subjectId);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'BAD_SUBJECT_ID' });
+    }
+    const baseUrl = normalizeGuaardvarkUrl(req.body?.baseUrl);
+    const { response, data } = await guaardvarkCall(baseUrl, `/api/cast/subjects/${subjectId}/train/cancel`, {
+      method: 'POST',
+    });
+    return res.status(response.ok ? 200 : 502).json({ ok: response.ok, remote: data });
+  } catch (error: any) {
+    return res.status(502).json({ error: 'GUAARDVARK_UNREACHABLE', message: describeNetworkError(error) });
+  }
+});
+
+// ============================================================================
+// LORA DELIVERY — dossier `loras/` de WanGP (Wan2GP)
+// ============================================================================
+// WanGP lit ses LoRA dans `loras/<famille>/` (loras/minimax_h3, loras/wan_i2v,
+// loras/z_image...). Ce bloc liste ce dossier et sert les .safetensors en HTTP :
+// l'URL produite se colle directement dans le champ « Enter Lora URL » de WanGP,
+// ce qui évite tout copier-coller de fichier.
+const WANGP_LORAS_ROOT = path.resolve(
+  (process.env.WANGP_LORAS_ROOT || path.join(os.homedir(), 'pinokio', 'app', 'loras')).replace(/^~/, os.homedir())
+);
+
+/** Sous-dossiers connus de WanGP : on n'expose rien d'autre. */
+const WANGP_LORA_FOLDERS = new Set([
+  'minimax_h3',
+  'wan',
+  'wan_i2v',
+  'wan_1.3B',
+  'wan_5B',
+  'flux',
+  'flux2',
+  'qwen',
+  'z_image',
+  'ltxv',
+  'ltx2',
+  'hunyuan',
+  'hunyuan_1_5',
+]);
+
+const SAFETENSORS_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.safetensors$/;
+
+function resolveWangpFolder(folder: string): { dir: string; key: string } | null {
+  if (!WANGP_LORA_FOLDERS.has(folder)) return null;
+  const dir = path.resolve(WANGP_LORAS_ROOT, folder);
+  // Défense en profondeur : le dossier résolu doit rester sous la racine.
+  if (dir !== path.join(WANGP_LORAS_ROOT, folder)) return null;
+  return { dir, key: folder };
+}
+
+function listWangpLoras(folder: string) {
+  const target = resolveWangpFolder(folder);
+  if (!target) return null;
+  const exists = fs.existsSync(target.dir);
+  let files: any[] = [];
+  if (exists) {
+    files = fs
+      .readdirSync(target.dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && SAFETENSORS_NAME.test(entry.name))
+      .map((entry) => {
+        const stat = fs.statSync(path.join(target.dir, entry.name));
+        return {
+          name: entry.name,
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          url: `/api/lora/wangp/${folder}/${encodeURIComponent(entry.name)}`,
+        };
+      })
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  }
+  return { root: WANGP_LORAS_ROOT, folder, path: target.dir, exists, files };
+}
+
+// Endpoint: état du dossier LoRA d'une famille de modèles WanGP
+app.get('/api/lora/wangp/:folder', (req, res) => {
+  const info = listWangpLoras(req.params.folder);
+  if (!info) {
+    return res.status(404).json({
+      error: 'UNKNOWN_WANGP_FOLDER',
+      message: `Dossier WanGP inconnu : ${req.params.folder}`,
+      knownFolders: [...WANGP_LORA_FOLDERS],
+    });
+  }
+  return res.json(info);
+});
+
+// Endpoint: liste des dossiers existants sous la racine loras/
+app.get('/api/lora/wangp', (req, res) => {
+  const rootExists = fs.existsSync(WANGP_LORAS_ROOT);
+  const folders = rootExists
+    ? fs
+        .readdirSync(WANGP_LORAS_ROOT, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && WANGP_LORA_FOLDERS.has(entry.name))
+        .map((entry) => {
+          const dir = path.join(WANGP_LORAS_ROOT, entry.name);
+          const count = fs
+            .readdirSync(dir)
+            .filter((name) => SAFETENSORS_NAME.test(name)).length;
+          return { key: entry.name, path: dir, count };
+        })
+    : [];
+  return res.json({ root: WANGP_LORAS_ROOT, exists: rootExists, folders });
+});
+
+// Endpoint: téléchargement d'un .safetensors (URL à coller dans WanGP)
+app.get('/api/lora/wangp/:folder/:name', (req, res) => {
+  const info = listWangpLoras(req.params.folder);
+  if (!info) return res.status(404).json({ error: 'UNKNOWN_WANGP_FOLDER' });
+  const name = req.params.name;
+  if (!SAFETENSORS_NAME.test(name)) {
+    return res.status(400).json({ error: 'BAD_LORA_NAME', message: 'Seuls les .safetensors de ce dossier sont servis.' });
+  }
+  const filePath = path.join(info.path, name);
+  if (path.dirname(path.resolve(filePath)) !== path.resolve(info.path) || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'LORA_NOT_FOUND', message: `${name} est absent de ${info.path}.` });
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  return fs.createReadStream(filePath).pipe(res);
+});
+
 // Mount Vite in development or static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  if (!IS_PRODUCTION) {
+    // Import dynamique : en production (app packagée) vite n'est jamais chargé
+    // et n'a pas besoin d'être livré avec l'application.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true as const },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const indexFile = path.join(DIST_DIR, 'index.html');
+    if (!fs.existsSync(indexFile)) {
+      console.error(
+        `[fatal] Frontend introuvable : ${indexFile}\n` +
+          'Lancez `npm run build` (ou `npm run package:win`) avant de démarrer en production.'
+      );
+      process.exit(1);
+    }
+    app.use(express.static(DIST_DIR, { index: false, maxAge: '1h' }));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(indexFile);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Pinokio Copilot Server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Pinokio AI Studio prêt : http://127.0.0.1:${PORT} (écoute ${HOST}:${PORT})`);
+  });
+
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(
+        `[fatal] Le port ${PORT} est déjà utilisé. Relancez avec PORT=3100 (ou définissez PORT dans .env).`
+      );
+      process.exit(2);
+    }
+    console.error('[fatal]', error);
+    process.exit(1);
   });
 }
 

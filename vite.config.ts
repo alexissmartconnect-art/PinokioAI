@@ -12,6 +12,10 @@ export default defineConfig(() => {
       },
     },
     server: {
+      // The Vite middleware is served by server.ts on 0.0.0.0:3000, including
+      // through hosted preview proxied under an *.e2b.app host, so the host
+      // check has to trust whatever Host header reaches it.
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

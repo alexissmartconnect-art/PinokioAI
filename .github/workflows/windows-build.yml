@@ -1,0 +1,142 @@
+name: Windows 11 build
+
+# Fabrique l'application Windows 11 (dossier autonome + zip) à chaque push, et
+# attache l'archive aux releases quand un tag v* est poussé.
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-package:
+    name: Build (dossier autonome + zip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Installer les dépendances
+        # Le dépôt verrouille via bun.lock ; --legacy-peer-deps gère le conflit
+        # de peer déjà présent (esbuild ^0.25 vs vite 8).
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Vérification TypeScript
+        run: npx tsc --noEmit
+
+      - name: Construire l'application Windows (runtime Node inclus)
+        run: node scripts/package-windows.mjs --with-node
+
+      - name: Vérifier le contenu de l'archive
+        run: |
+          set -e
+          cd release
+          test -f "Pinokio AI Studio/app/server.cjs"
+          test -f "Pinokio AI Studio/app/dist/index.html"
+          test -f "Pinokio AI Studio/icon.ico"
+          test -f "Pinokio AI Studio/Launcher.ps1"
+          test -f "Pinokio AI Studio/runtime/node.exe"
+          unzip -l Pinokio-AI-Studio-*-win64.zip | tail -5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinokio-ai-studio-windows
+          path: release/Pinokio-AI-Studio-*-win64.zip
+          retention-days: 30
+
+      - name: Attacher l'archive à la release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" --title "Pinokio AI Studio ${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" release/Pinokio-AI-Studio-*-win64.zip --clobber
+
+  smoke-test-windows:
+    name: Smoke test (Windows, serveur en production)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Installer les dépendances
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Construire le paquet (sans runtime, Node du runner)
+        run: node scripts/package-windows.mjs --no-zip
+
+      - name: Vérifier les scripts Windows (syntaxe PowerShell)
+        shell: pwsh
+        run: |
+          foreach ($file in @('release\Pinokio AI Studio\Launcher.ps1', 'release\Pinokio AI Studio\Stop.ps1', 'release\Pinokio AI Studio\Install-Shortcuts.ps1')) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) { throw "$file : $($errors[0].Message)" }
+            Write-Host "OK $file"
+          }
+
+      - name: Démarrer l'application packagée et sonder /api/health
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Join-Path $PWD 'release\Pinokio AI Studio'
+          $env:NODE_ENV = 'production'
+          $env:PORT = '3917'
+          $env:APP_VERSION = 'ci'
+          # Pas de -WindowStyle ici : incompatible avec -RedirectStandardOutput.
+          # Le chemin contient des espaces (« Pinokio AI Studio ») : sans guillemets,
+          # Start-Process découpe l'argument et node reçoit un chemin tronqué.
+          $serverScript = '"' + (Join-Path $app 'app\server.cjs') + '"'
+          $proc = Start-Process -FilePath (Get-Command node).Source `
+            -ArgumentList $serverScript `
+            -WorkingDirectory $app -PassThru `
+            -RedirectStandardOutput (Join-Path $env:TEMP 'srv.out.log') `
+            -RedirectStandardError (Join-Path $env:TEMP 'srv.err.log')
+
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 700
+            try {
+              $health = Invoke-RestMethod -Uri 'http://127.0.0.1:3917/api/health' -TimeoutSec 2
+              if ($health.status -eq 'ok') { $ok = $true; break }
+            } catch { }
+          }
+          if (-not $ok) {
+            $err = (Get-Content (Join-Path $env:TEMP 'srv.err.log') -ErrorAction SilentlyContinue | Select-Object -Last 25) -join "`n"
+            $out = (Get-Content (Join-Path $env:TEMP 'srv.out.log') -ErrorAction SilentlyContinue | Select-Object -Last 25) -join "`n"
+            $state = if ($proc.HasExited) { "process exited with code $($proc.ExitCode)" } else { 'process still running' }
+            $listening = (Get-NetTCPConnection -LocalPort 3917 -ErrorAction SilentlyContinue | Measure-Object).Count
+            Write-Host "--- stderr ---"; Write-Host $err
+            Write-Host "--- stdout ---"; Write-Host $out
+            # Annotation lisible par l'API (les logs bruts du runner ne le sont pas ici).
+            $detail = "state=$state listening=$listening`nSTDERR:`n$err`nSTDOUT:`n$out"
+            $encoded = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error title=Smoke test: serveur packagé KO::$encoded"
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+          $page = Invoke-WebRequest -Uri 'http://127.0.0.1:3917/' -UseBasicParsing -TimeoutSec 5
+          if ($page.StatusCode -ne 200) { throw "Page d'accueil: HTTP $($page.StatusCode)" }
+          if ($page.Content -notmatch 'Pinokio') { throw 'La page servie ne ressemble pas à Pinokio AI Studio' }
+
+          $plan = Invoke-RestMethod -Uri 'http://127.0.0.1:3917/api/lora/plan' -Method Post `
+            -ContentType 'application/json' -Body '{"hardware":"12GB"}'
+          if (-not $plan.plan.baseModel) { throw 'Le plan LoRA est vide' }
+          Write-Host "OK - backend $($health.version) / plan $($plan.plan.baseModelLabel)"
+
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue

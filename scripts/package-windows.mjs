@@ -52,14 +52,10 @@ function readVersion() {
   }
 }
 
-function run(command, argv, options = {}) {
-  return execFileSync(command, argv, { cwd: root, stdio: 'inherit', ...options });
-}
-
 // ---------------------------------------------------------------------------
 // 1. Frontend (Vite → dist/)
 // ---------------------------------------------------------------------------
-function buildFrontend() {
+async function buildFrontend() {
   log('1/6', 'Compilation du frontend (vite build)');
   if (hasFlag('skip-build')) {
     if (!fs.existsSync(path.join(root, 'dist', 'index.html'))) {
@@ -68,33 +64,35 @@ function buildFrontend() {
     ok('dist/ réutilisé');
     return;
   }
-  run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vite', 'build']);
+  // API JS de Vite plutôt que `npx vite` : sous Windows, Node refuse de lancer
+  // un .cmd sans shell (EINVAL depuis Node 20.12), et on évite un processus de plus.
+  const { build } = await import('vite');
+  await build({ logLevel: 'warn' });
   ok('dist/ généré');
 }
 
 // ---------------------------------------------------------------------------
 // 2. Serveur + API (esbuild → app/server.cjs)
 // ---------------------------------------------------------------------------
-function buildServer(version) {
+async function buildServer(version) {
   log('2/6', 'Bundling du serveur (esbuild → server.cjs)');
   const outfile = path.join(OUT_DIR, 'app', 'server.cjs');
   fs.mkdirSync(path.dirname(outfile), { recursive: true });
-  run(process.platform === 'win32' ? 'npx.cmd' : 'npx', [
-    'esbuild',
-    'server.ts',
-    '--bundle',
-    '--platform=node',
-    '--format=cjs',
-    '--target=node20',
-    '--minify',
+  const esbuild = await import('esbuild');
+  await esbuild.build({
+    entryPoints: [path.join(root, 'server.ts')],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    minify: true,
     // vite et esbuild ne servent qu'au développement (import dynamique) : ils
     // restent externes pour ne pas les embarquer dans l'app de production.
-    '--external:vite',
-    '--external:esbuild',
-    `--define:process.env.APP_VERSION=${JSON.stringify(version)}`,
-    `--outfile=${outfile}`,
-    '--log-level=warning',
-  ]);
+    external: ['vite', 'esbuild'],
+    define: { 'process.env.APP_VERSION': JSON.stringify(version) },
+    logLevel: 'warning',
+  });
   ok(`app/server.cjs (${(fs.statSync(outfile).size / 1024 / 1024).toFixed(2)} Mo)`);
 }
 
@@ -324,8 +322,8 @@ async function main() {
   }
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  buildFrontend();
-  buildServer(version);
+  await buildFrontend();
+  await buildServer(version);
   copyAppAssets(version);
 
   if (hasFlag('with-node')) {

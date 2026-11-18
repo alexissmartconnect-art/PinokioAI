@@ -461,6 +461,8 @@ export interface LoraWanGpFile {
 
 export interface LoraWanGpFolderInfo {
   root: string;
+  /** `env` = WANGP_LORAS_ROOT, `auto` = dossier WanGP détecté, `default` = valeur de repli. */
+  rootSource?: 'env' | 'auto' | 'default';
   folder?: string;
   path: string;
   exists: boolean;

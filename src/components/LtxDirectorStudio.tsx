@@ -148,8 +148,10 @@ export const LtxDirectorStudio: React.FC<LtxDirectorStudioProps> = ({
           targetApp: 'wan2gp_ltx_director',
         }),
       });
-      const data = await res.json();
-      setTestResult(data);
+      const data = await res.json().catch(() => null);
+      setTestResult(
+        data || { connected: false, diagnostics: { status: 'OFFLINE', recommendation: `Réponse illisible du serveur (HTTP ${res.status}).` } }
+      );
     } catch (err: any) {
       setTestResult({
         connected: false,
@@ -1078,7 +1080,7 @@ export const LtxDirectorStudio: React.FC<LtxDirectorStudioProps> = ({
                   <div className="flex items-center justify-between font-bold">
                     <span className="flex items-center gap-1.5">
                       {testResult.connected ? <CheckCircle2 className="w-4 h-4 text-green-400" /> : <AlertCircle className="w-4 h-4 text-amber-400" />}
-                      <span>Statut : {testResult.diagnostics?.status}</span>
+                      <span>Statut : {testResult.diagnostics?.status || testResult.error || 'ERREUR'}</span>
                     </span>
                     {testResult.diagnostics?.latencyMs && (
                       <span className="font-mono text-[11px] text-green-400">
@@ -1087,7 +1089,7 @@ export const LtxDirectorStudio: React.FC<LtxDirectorStudioProps> = ({
                     )}
                   </div>
                   <p className="text-[11px] leading-relaxed opacity-90">
-                    {testResult.diagnostics?.recommendation}
+                    {testResult.diagnostics?.recommendation || testResult.message}
                   </p>
                   <div className="pt-2 border-t border-slate-800/60 font-mono text-[10px] text-slate-400 flex items-center justify-between">
                     <span>Cible : {testResult.testedEndpoint}</span>

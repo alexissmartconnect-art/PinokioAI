@@ -33,7 +33,11 @@ import {
   QualityGateStatus 
 } from '../types';
 import { KaiOrb } from './KaiOrb';
-import { CinematicViewport } from './CinematicViewport';
+// three.js (≈600 Ko) est le seul gros import de l'app : on le charge à la
+// demande pour ne pas alourdir le premier affichage.
+const CinematicViewport = React.lazy(() =>
+  import('./CinematicViewport').then((mod) => ({ default: mod.CinematicViewport }))
+);
 import { VisualInspectorPanel } from './VisualInspectorPanel';
 import { ScrollDirector, ScrollDirectorState } from '../services/kai/scrollDirector';
 import { CreativeDirector } from '../services/kai/creativeDirector';
@@ -357,11 +361,19 @@ export const KaiCinematicStudio: React.FC = () => {
         <div className="space-y-6">
           
           {/* Main 3D / WebGL Viewport */}
-          <CinematicViewport
-            scrollState={scrollState}
-            activeStrategy={activeStrategy}
-            isReducedMotion={isReducedMotion}
-          />
+          <React.Suspense
+            fallback={
+              <div className="h-72 rounded-3xl border border-slate-800 bg-[#0e1218] flex items-center justify-center text-xs text-slate-400">
+                Chargement du moteur 3D…
+              </div>
+            }
+          >
+            <CinematicViewport
+              scrollState={scrollState}
+              activeStrategy={activeStrategy}
+              isReducedMotion={isReducedMotion}
+            />
+          </React.Suspense>
 
           {/* Interactive Authoritative Scroll Director Bar (Instruction 10) */}
           <div className="p-5 rounded-3xl bg-[#0e1218] border border-slate-800 shadow-xl space-y-4">

@@ -229,6 +229,28 @@ export const VisionAnalyzer: React.FC<VisionAnalyzerProps> = ({
     if (file) processUploadedFile(file);
   };
 
+  // Reduce a base64 image in the browser (canvas) so large photos still work.
+  const downscaleDataUrl = (dataUrl: string, maxDim: number, quality: number) =>
+    new Promise<string>((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const scale = Math.min(1, maxDim / Math.max(image.width, image.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(dataUrl);
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } catch {
+          resolve(dataUrl);
+        }
+      };
+      image.onerror = () => resolve(dataUrl);
+      image.src = dataUrl;
+    });
+
   // Prepare Base64 data for server vision request
   const getPayloadBase64 = async (): Promise<string> => {
     // If video, use captured frame
@@ -238,17 +260,24 @@ export const VisionAnalyzer: React.FC<VisionAnalyzerProps> = ({
     }
 
     if (selectedMediaUrl) {
-      if (selectedMediaUrl.startsWith('data:image')) {
-        return selectedMediaUrl;
-      }
-      const response = await fetch(selectedMediaUrl);
-      const blob = await response.blob();
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
+      const dataUrl = selectedMediaUrl.startsWith('data:image')
+        ? selectedMediaUrl
+        : await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            fetch(selectedMediaUrl)
+              .then((response) => response.blob())
+              .then((blob) => reader.readAsDataURL(blob))
+              .catch(reject);
+          });
+
+      // Express refuse au-delà de 30 Mo de JSON : une photo récente dépasse
+      // facilement cette limite une fois encodée en base64. On la réduit donc
+      // ici, plutôt que de laisser le serveur répondre 413.
+      return dataUrl.length > 20 * 1024 * 1024
+        ? await downscaleDataUrl(dataUrl, 1600, 0.85)
+        : dataUrl;
     }
 
     throw new Error("Aucun média sélectionné pour l'analyse.");
@@ -287,8 +316,8 @@ export const VisionAnalyzer: React.FC<VisionAnalyzerProps> = ({
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erreur serveur (${res.status})`);
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.message || `Erreur serveur (${res.status})`);
       }
 
       const data: AIAnalysisResult = await res.json();

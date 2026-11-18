@@ -60,6 +60,20 @@ En résumé : photos d'un personnage → `dataset-checklist.md` + configuration 
 | `GET /api/lora/wangp` · `/api/lora/wangp/:folder` · `/api/lora/wangp/:folder/:file` | livraison Wan2GP |
 | `POST /api/analyze-image` · `/api/chat` · `/api/kai/*` | analyse, copilote, KAI |
 
+Toutes les routes `/api/*` répondent **toujours en JSON**, y compris en cas
+d'erreur : `{ "error": "CODE", "message": "…" }` avec un statut HTTP explicite.
+
+| Code | Statut | Signification |
+|------|--------|---------------|
+| `NO_AI_KEY` | 503 | aucune clé (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`) |
+| `AI_PROVIDER_ERROR` | 502 | le fournisseur a refusé ou est injoignable |
+| `INVALID_JSON` | 400 | corps de requête illisible |
+| `PAYLOAD_TOO_LARGE` | 413 | image/vidéo trop lourde (limite 30 Mo) |
+| `NOT_FOUND` | 404 | route API inconnue |
+
+`GET /api/health` expose `hasAnyApiKey` : `true` dès qu'**un** fournisseur est
+configuré (`hasApiKey` reste l'alias historique de Gemini).
+
 ## Configuration
 
 `.env` (voir `.env.example`) : `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,

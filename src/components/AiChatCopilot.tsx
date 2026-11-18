@@ -220,9 +220,17 @@ Sélectionnez votre moteur IA préféré dans le menu en haut ou posez directeme
         }),
       });
 
-      if (!res.ok) throw new Error('Erreur de réponse du serveur IA');
-
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        // Le serveur renvoie { error, message } : on affiche sa raison exacte
+        // (clé IA absente, quota, fournisseur injoignable…).
+        const reason =
+          data?.error === 'NO_AI_KEY'
+            ? 'Aucune clé API configurée'
+            : data?.message || `Erreur ${res.status}`;
+        throw new Error(reason);
+      }
+      if (!data?.reply) throw new Error('Réponse vide du serveur IA');
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -237,7 +245,7 @@ Sélectionnez votre moteur IA préféré dans le menu en haut ou posez directeme
       const errorMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `Une erreur est survenue lors de l'appel à ${activeModel.name} : ${err?.message || 'Erreur réseau'}. Veuillez vérifier la configuration de l'API ou basculer sur Gemini.`,
+        content: `⚠️ ${activeModel.name} n'a pas pu répondre : ${err?.message || 'erreur réseau'}.\n\nVérifiez la clé API via le bouton « Réglages API » (fichier .env), puis réessayez.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMsg]);
